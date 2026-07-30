@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>geo-engine · climate mesh</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="layout layout-minimal">
+    <aside class="sidebar">
+      <header>
+        <h1>geo-engine</h1>
+        <p class="subtitle">地形 · 水循环 CA · 面渲染</p>
+        <p class="version-badge" id="appVersion">v…</p>
+      </header>
+
+      <section class="panel panel-actions" id="generationPanel">
+        <h2>生成</h2>
+        <label>Seed<input id="seed" type="text" value="mesh-demo"></label>
+        <label>Mesh 细分
+          <select id="meshSubdiv">
+            <option value="4">4 · 快速</option>
+            <option value="5">5 · 标准</option>
+            <option value="6" selected>6 · 精细</option>
+          </select>
+        </label>
+        <div class="btn-row">
+          <button id="btnGenerate" class="primary" type="button">重新生成世界</button>
+          <button id="btnRandomSeed" type="button">随机 Seed</button>
+        </div>
+        <div class="btn-row">
+          <button id="btnRebuildMesh" type="button">重建 Mesh</button>
+          <button id="btnApplyParams" type="button">应用参数</button>
+        </div>
+        <p id="genStatus" class="status">就绪</p>
+        <p class="hint">改海平面/轴倾角后点「应用参数」或「重新生成世界」</p>
+      </section>
+
+      <section class="panel" id="previewWorldPanel" hidden>
+        <h2>编年史世界</h2>
+        <p class="preview-world-id" id="previewWorldId">—</p>
+        <label>图层
+          <select id="previewLayer">
+            <option value="terrain">地形</option>
+            <option value="elevation">海拔</option>
+            <option value="magic">魔法浓度</option>
+          </select>
+        </label>
+        <p id="selectedMapLocation" class="preview-world-id">点击地球选择制图中心</p>
+        <p class="hint">拖拽旋转；单击球面放置红色定位点，再展开局部地图。</p>
+      </section>
+
+      <section class="panel" id="planetPanel">
+        <h2>行星参数</h2>
+        <label>海平面 (m)
+          <input id="seaLevel" type="range" min="200" max="2200" step="50" value="900">
+          <span class="range-val" id="seaLevelVal">900 m</span>
+        </label>
+        <label>轴倾角 (°)
+          <input id="obliquity" type="range" min="0" max="45" step="0.5" value="23.44">
+          <span class="range-val" id="obliquityVal">23.4°</span>
+        </label>
+        <label>自转
+          <select id="rotation">
+            <option value="prograde" selected>北半球逆时针（顺行）</option>
+            <option value="retrograde">逆行</option>
+          </select>
+        </label>
+        <dl class="mesh-stats compact">
+          <dt>回归线</dt><dd id="statTropic">±23.4°</dd>
+          <dt>极圈</dt><dd id="statPolar">±66.6°</dd>
+        </dl>
+      </section>
+
+      <section class="panel" id="displayPanel">
+        <h2>图层</h2>
+        <label class="checkbox"><input id="showWireframe" type="checkbox"> 网格线</label>
+        <label class="checkbox"><input id="showGraticule" type="checkbox" checked> 经纬辅助线</label>
+        <label class="checkbox"><input id="showRivers" type="checkbox" checked> 河流</label>
+        <label>镜头距离
+          <input id="zoomSlider" type="range" min="55" max="145" value="100">
+        </label>
+      </section>
+
+      <section class="panel" id="meshPanel">
+        <h2>Mesh</h2>
+        <dl class="mesh-stats">
+          <dt>拓扑</dt><dd>Icosphere</dd>
+          <dt>细分</dt><dd id="statSubdiv">—</dd>
+          <dt>顶点</dt><dd id="statVerts">—</dd>
+          <dt>三角面</dt><dd id="statFaces">—</dd>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>统计</h2>
+        <dl class="mesh-stats">
+          <dt>海拔</dt><dd><span id="statMin">—</span> ~ <span id="statMax">—</span></dd>
+          <dt>陆地</dt><dd id="statLand">—</dd>
+          <dt>河流</dt><dd id="statRivers">—</dd>
+          <dt>湖泊</dt><dd id="statLakes">—</dd>
+          <dt>岛屿</dt><dd id="statIslands">—</dd>
+          <dt>植被</dt><dd id="statVegetation">—</dd>
+          <dt>填平内海</dt><dd id="statBasins">—</dd>
+          <dt>雪线(赤道)</dt><dd>3800 m</dd>
+        </dl>
+        <p class="legend">
+          <span class="swatch tropical"></span>热带
+          <span class="swatch forest"></span>森林
+          <span class="swatch arid"></span>干旱
+          <span class="swatch lake"></span>湖泊
+          <span class="swatch ocean"></span>海洋
+        </p>
+      </section>
+    </aside>
+
+    <main class="map-area map-area-full">
+      <div class="globe-wrap-full">
+        <div class="canvas-toolbar">
+          <button id="btnOpenRegion" type="button" class="toolbar-btn" hidden disabled>▣ 展开定位点</button>
+          <button id="btnRegenOverlay" type="button" class="toolbar-btn">↻ 重新生成</button>
+        </div>
+        <canvas id="globeCanvas"></canvas>
+      </div>
+    </main>
+  </div>
+  <dialog id="regionMapDialog" class="region-dialog">
+    <header class="region-dialog-header">
+      <div>
+        <h2>局部二维地图</h2>
+        <p id="regionMapLocation">—</p>
+      </div>
+      <button id="btnCloseRegion" type="button" aria-label="关闭">×</button>
+    </header>
+    <div class="region-controls">
+      <label>范围
+        <select id="regionSpan">
+          <option value="4">4° · 近景</option>
+          <option value="10" selected>10° · 区域</option>
+          <option value="20">20° · 广域</option>
+          <option value="40">40° · 大区</option>
+        </select>
+      </label>
+      <label>图层
+        <select id="regionLayer">
+          <option value="terrain">地形</option>
+          <option value="elevation">海拔</option>
+          <option value="magic">魔法浓度</option>
+        </select>
+      </label>
+      <button id="btnRefreshRegion" type="button">重新生成</button>
+      <button id="btnSaveRegion" type="button">保存 PNG</button>
+    </div>
+    <div class="region-canvas-wrap">
+      <canvas id="regionMapCanvas" width="960" height="640"></canvas>
+      <p id="regionMapStatus">选择范围后生成地图</p>
+    </div>
+  </dialog>
+  <script src="/terrain-sampler.js"></script>
+  <script src="/planet-params.js"></script>
+  <script src="/ocean-connectivity.js"></script>
+  <script src="/water-cycle.js"></script>
+  <script src="/climate-sim.js"></script>
+  <script src="/surface-features.js"></script>
+  <script src="/icosphere.js"></script>
+  <script src="/preview-route.js"></script>
+  <script src="/globe-gl.js"></script>
+  <script src="/globe.js"></script>
+  <script src="/mesh-view.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
