@@ -8,11 +8,15 @@
  *   CAL_RES=2 node scripts/calibrate-climate.js precip [rounds]  # moisture parameters vs GPCC (land)
  *
  * Prints the best parameter set; copy it into DEFAULT_PARAMS in src/generate/atmosphere.js.
+ * CAL_START='{"key":value}' overrides the starting point; IDEAL_WEIGHT scales the
+ * hypothetical-continent term (0 = Earth only).
  */
 
 const { LatLonGrid, simulateAtmosphere, DEFAULT_PARAMS } = require('../src/generate/atmosphere');
 const { normalizePlanet } = require('../src/planet/params');
 const { loadEarthHeightSampler, loadEarthClimatology, isIceSheet } = require('../test/support/earth-reference');
+const { idealSurface, scoreContinent } = require('../test/support/ideal-worlds');
+const { koppenClass } = require('../src/generate/climate-stage');
 
 const planet = normalizePlanet({});
 const grid = new LatLonGrid(Number(process.env.CAL_RES || 1));
@@ -83,7 +87,28 @@ for (let i = 0; i < grid.nLat; i++) {
 const { REGIONS } = require('../test/support/earth-climate-score');
 const regionCells = REGIONS.map(([, lat, lon]) => grid.index(lat, lon)).filter((c) => Number.isFinite(obsP[c]));
 
+// The hypothetical continent keeps the parameters general rather than fitted to Earth's map.
+const IDEAL_WEIGHT = Number(process.env.IDEAL_WEIGHT ?? 2);
+const idealGrid = new LatLonGrid(2);
+const idealLand = idealSurface('continent', idealGrid);
+
+function idealScore(params) {
+  const r = simulateAtmosphere(idealGrid, idealLand, planet, { spinupDays: 60, ...params });
+  const lapse = planet.lapseRateC / 1000;
+  const S = idealGrid.size;
+  return scoreContinent((lat, lon) => {
+    const c = idealGrid.index(lat, lon);
+    const t = []; const p = [];
+    for (let m = 0; m < 12; m++) {
+      t.push(r.monthTempSeaLevel[m * S + c] - lapse * idealLand.heightM[c]);
+      p.push(r.monthPrecip[m * S + c]);
+    }
+    return { precip: p.reduce((a, b) => a + b, 0), koppen: koppenClass(t, p, lat) };
+  });
+}
+
 function precipScore(params) {
+  const ideal = IDEAL_WEIGHT > 0 ? idealScore(params) : { loss: 0, hits: 0 };
   const r = simulateAtmosphere(grid, surface, planet, { spinupDays: 60, ...params });
   let sw = 0; let mSum = 0; let oSum = 0; let aridM = 0; let aridO = 0;
   let oceanE = 0; let oceanW = 0;
@@ -132,10 +157,12 @@ function precipScore(params) {
     aridModel: aridM / sw * 100,
     aridObs: aridO / sw * 100,
     oceanEvap: oceanE / oceanW,
-    regionErr
+    regionErr,
+    idealHits: ideal.hits,
+    idealLoss: ideal.loss
   };
   out.loss = 2 * (1 - out.rLog) + out.zonalRmse / 400 + Math.abs(out.aridModel - out.aridObs) / 15 + Math.abs(Math.log(out.meanRatio)) * 2
-    + Math.abs(Math.log(out.oceanEvap / 1200)) * 2 + regionErr;
+    + Math.abs(Math.log(out.oceanEvap / 1200)) * 2 + regionErr + IDEAL_WEIGHT * ideal.loss;
   return out;
 }
 
@@ -148,7 +175,8 @@ const SPACES = {
       rhAscent: [0, 0.35],
       rhSubsidence: [0, 0.1],
       gyreWind: [0, 8],
-      gyreAscent: [0, 8],
+      gyreAscent: [0, 10],
+      gyreDescent: [0, 8],
       gyreInlandKm: [300, 3000],
       thermalWind: [0, 3],
       itczShiftFactor: [0.2, 1.5],
@@ -156,8 +184,16 @@ const SPACES = {
       plateauItczGain: [0, 6],
       wtgLandOffsetC: [0, 10],
       ascentBlurDeg: [1.5, 8],
-      frontalRate: [0.05, 2],
+      frontalRate: [0.05, 4],
+      polarFrontalShare: [0, 1],
       convergenceFactor: [0, 1.5],
+      extratropLandConv: [0, 1],
+      convTropicsDeg: [10, 35],
+      ascentZonalTerm: [0, 1],
+      frontalContinentality: [0, 1],
+      leeFrontalScaleM: [100, 3000],
+      leeFrontalThresholdM: [0, 800],
+      wtgLatDeg: [25, 90],
       orographicEfficiency: [0.05, 0.8],
       orographicScaleM: [500, 5000],
       leeDryingThresholdM: [0, 1000],
@@ -188,6 +224,7 @@ function fmt(s) {
 function main() {
   const space = SPACES[process.argv[2] || 'temperature'];
   let best = Object.fromEntries(Object.keys(space.keys).map((k) => [k, DEFAULT_PARAMS[k]]));
+  Object.assign(best, JSON.parse(process.env.CAL_START || '{}'));
   let bestScore = space.score(best);
   console.log('start', fmt(bestScore), JSON.stringify(best));
   const step = Object.fromEntries(Object.entries(space.keys).map(([k, [lo, hi]]) => [k, (hi - lo) / 4]));

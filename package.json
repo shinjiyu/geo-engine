@@ -8,7 +8,7 @@
     "build:orogen": "esbuild vendor/world-orogen/runner.js --bundle --platform=node --format=cjs --outfile=src/generate/orogen-runtime.cjs",
     "start": "node server.js",
     "cli": "node cli.js",
-    "test": "node test/topology.js && node test/atmosphere.js && node test/earth-climate.js && node test/orogen-terrain.js && node test/lake-generation-contract.js && node test/drainage-invariants.js && node test/magic-geography.js && node test/species-capacity.js && node test/species-realm-integration.js && node test/chronicle-contract.js && node test/smoke.js && node test/map-smoke.js && node test/local-map-tool.js && node test/preview-route.js && node test/render-contract.js && node test/surface-render-contract.js && node test/continuity.js && node test/ocean-connectivity.js && node test/surface-features.js && node test/geo-llm-tools.js"
+    "test": "node test/topology.js && node test/atmosphere.js && node test/earth-climate.js && node test/procedural-climate.js && node test/orogen-terrain.js && node test/lake-generation-contract.js && node test/drainage-invariants.js && node test/magic-geography.js && node test/species-capacity.js && node test/species-realm-integration.js && node test/chronicle-contract.js && node test/smoke.js && node test/map-smoke.js && node test/local-map-tool.js && node test/preview-route.js && node test/render-contract.js && node test/surface-render-contract.js && node test/continuity.js && node test/ocean-connectivity.js && node test/surface-features.js && node test/geo-llm-tools.js"
   },
   "type": "commonjs",
   "dependencies": {

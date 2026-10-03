@@ -15,7 +15,8 @@ const REGIONS = [
   ['Amazon', -3, -60], ['Congo', 0, 22], ['Borneo', 1, 114], ['Bangladesh', 24, 90],
   ['West Europe', 48, 2], ['Moscow', 56, 38], ['Central Siberia', 60, 100], ['US Southeast', 34, -85],
   ['India center', 22, 78], ['Tibet', 33, 88], ['Sahel', 13, 5], ['South China', 25, 113],
-  ['Chile south', -45, -73], ['Patagonia east', -45, -68], ['Norway coast', 61, 6], ['East Africa', 0, 37]
+  ['Chile south', -45, -73], ['Patagonia east', -45, -68], ['Norway coast', 61, 6], ['East Africa', 0, 37],
+  ['Volga', 53, 48], ['Kazakh steppe', 48, 70], ['Yakutia', 62, 130], ['US Midwest', 42, -93]
 ];
 
 function pearson(xs, ys, ws) {

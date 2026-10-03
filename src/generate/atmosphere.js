@@ -39,10 +39,10 @@ const DEFAULT_PARAMS = {
   hadleyEdgeDeg: 30,
   polarFrontDeg: 65,
   itczShiftFactor: 1.287,
-  monsoonLandGain: 5,
+  monsoonLandGain: 4.6875,
   plateauHeightM: 2500,
-  plateauItczGain: 5.625,
-  ascentBlurDeg: 1.956,
+  plateauItczGain: 6,
+  ascentBlurDeg: 3.125,
   tradeU: 7,
   tradeV: 1.726,
   westerlyU: 9,
@@ -50,7 +50,10 @@ const DEFAULT_PARAMS = {
   polarU: 3,
   polarV: 1,
   gyreWind: 3,
-  gyreAscent: 1,
+  gyreAscent: 5.625,
+  gyreDescent: 0,
+  gyreAscentOcean: 0,
+  gyreLandBlurDeg: 4,
   gyreInlandKm: 3000,
   sstGyreSubtropical: 3,
   sstGyreSubpolar: 4,
@@ -64,19 +67,29 @@ const DEFAULT_PARAMS = {
   wsatSlope: 0.063,
   vapourScaleHeightM: 2200,
   wtgLandOffsetC: 0,
+  wtgLatDeg: 81.8625,
   oceanEvapCoef: 0.02,
   convergenceFactor: 0.461,
-  rhBase: 0.622,
-  rhAscent: 0.189,
-  rhSubsidence: 0,
+  convTropicsDeg: 15.65,
+  extratropLandConv: 0.1875,
+  rhBase: 0.7097,
+  rhAscent: 0.2328,
+  rhSubsidence: 0.0125,
   rhMin: 0.45,
   rhMax: 0.98,
   condenseTauDays: 0.25,
-  frontalRate: 2,
-  polarFrontalShare: 0.441,
-  orographicEfficiency: 0.086,
-  orographicScaleM: 3156,
-  leeDryingThresholdM: 488,
+  frontalRate: 4,
+  frontalRhTrue: 1,
+  frontalRhExp: 2,
+  ascentZonalTerm: 0.25,
+  frontalContinentality: 0,
+  leeFetchKm: 600,
+  leeFrontalScaleM: 3000,
+  leeFrontalThresholdM: 800,
+  polarFrontalShare: 0.2545,
+  orographicEfficiency: 0.05,
+  orographicScaleM: 1187.5,
+  leeDryingThresholdM: 487,
   // land surface
   soilCapacityMm: 150,
   fastRunoff: 0.3,
@@ -318,6 +331,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   const depW = new Float64Array(size * 4);
   const oroFrac = new Float64Array(size);
   const leeFactor = new Float64Array(size);
+  const leeFrontal = new Float64Array(size);
   const oroCol = new Float64Array(size);
   const storm = new Float64Array(size);
   const tsl = new Float64Array(size);
@@ -387,6 +401,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     }
   }
   const gyreField = blurField(grid, gyreShape, 4, 1);
+  // Smooth land share: summer convection needs a sizeable heated land area, not a coastal step.
+  const landShare = blurField(grid, Float64Array.from(isLand), p.gyreLandBlurDeg, 1);
   const marineAnomaly = new Float64Array(size);
   const anomalyCache = new Array(12).fill(null);
   const diag = p.diagnostics ? {
@@ -512,7 +528,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         const iS = Math.max(0, i - 1);
         const dvdy = (baseV[iN * nLon + j] * rowCos[iN] - baseV[iS * nLon + j] * rowCos[iS])
           / ((iN - iS) * dy * Math.max(0.05, rowCos[i]));
-        divRaw[c] = (dudx + dvdy) * 1e6;
+        divRaw[c] = (p.ascentZonalTerm * dudx + dvdy) * 1e6;
       }
     }
     const div = blurField(grid, divRaw, p.ascentBlurDeg, 1);
@@ -543,7 +559,9 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         const summer = rowLat[i] * itcz[j] >= 0 ? 1.3 : 0.7;
         const gyreV = p.gyreWind * env * summer * gyreField[c] * Math.sign(rowLat[i]);
         // Subtropical highs subside over eastern basins / west coasts and lift on their western flanks.
-        ascent[c] += p.gyreAscent * env * summer * gyreField[c];
+        const g = gyreField[c];
+        const landW = landShare[c] + (1 - landShare[c]) * p.gyreAscentOcean;
+        ascent[c] += (g > 0 ? p.gyreAscent * landW : p.gyreDescent) * env * summer * g;
         u[c] = baseU[c] + p.thermalWind * gx + p.thermalGeoWind * geo * gy;
         v[c] = baseV[c] + p.thermalWind * gy - p.thermalGeoWind * geo * gx + gyreV;
         speed[c] = Math.hypot(u[c], v[c]);
@@ -565,7 +583,14 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     const divSmooth = blurField(grid, totalDiv, 2, 1);
     const dtStep = 86400 / p.stepsPerDay;
     for (let c = 0; c < size; c++) {
-      convergence[c] = clamp(Math.exp(-p.convergenceFactor * divSmooth[c] * dtStep), 0.7, 1.4);
+      let conv = clamp(Math.exp(-p.convergenceFactor * divSmooth[c] * dtStep), 0.7, 1.4);
+      if (conv > 1 && isLand[c]) {
+        // Away from the ITCZ, continental lows are shallow and capped: they gather little vapour.
+        const off = Math.abs(rowLat[rowOf[c]] - itcz[c % nLon]);
+        const tropical = smoothstep(p.convTropicsDeg + 10, p.convTropicsDeg, off);
+        conv = 1 + (conv - 1) * (tropical + (1 - tropical) * p.extratropLandConv);
+      }
+      convergence[c] = conv;
     }
 
     // Storm-track strength from the zonal-mean temperature gradient (K per 1000 km).
@@ -599,6 +624,15 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         // the factor is spread over the steps the air needs to cross one cell.
         const crest = h[up] - h[c] - p.leeDryingThresholdM;
         leeFactor[c] = crest > 0 ? Math.exp(-crest / p.vapourScaleHeightM * Math.min(1, sp * dtSec / cellM)) : 1;
+        // Downslope flow behind a range suppresses frontal uplift over the lee plains.
+        let ridge = 0;
+        const steps = Math.max(1, Math.round(p.leeFetchKm * 1000 / cellM));
+        for (let k = 1; k <= steps; k++) {
+          const uc = grid.index(clamp(lat - k * grid.res * v[c] / sp, -89.9, 89.9),
+            lon - k * grid.res * u[c] / sp / Math.max(0.05, rowCos[i]));
+          if (h[uc] > ridge) ridge = h[uc];
+        }
+        leeFrontal[c] = Math.exp(-Math.max(0, ridge - h[c] - p.leeFrontalThresholdM) / p.leeFrontalScaleM);
       }
     }
 
@@ -656,6 +690,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   const snow = new Float64Array(size);
   const stepRain = new Float64Array(size);
   const capDay = new Float64Array(size);
+  const wtgWeight = Float64Array.from(rowLat, (lat) => smoothstep(p.wtgLatDeg + 10, p.wtgLatDeg, Math.abs(lat)));
+  const frontCapDay = new Float64Array(size);
   const tsDay = new Float64Array(size);
   const petDay = new Float64Array(size);
   const petSnowDay = new Float64Array(size);
@@ -695,7 +731,9 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         for (let c = 0; c < size; c++) {
           const asc = ascent[c];
           rhcCol[c] = clamp(p.rhBase - p.rhAscent * Math.max(0, asc) + p.rhSubsidence * Math.max(0, -asc), p.rhMin, p.rhMax);
-          frontal[c] = p.frontalRate * storm[c] * Math.min(2, baro[rowOf[c]] / 6) * dtDay;
+          // Storm tracks feed on ocean air and weaken as cyclones travel deep into continents.
+          const continental = isLand[c] ? p.frontalContinentality * (1 - marine[c]) : 0;
+          frontal[c] = p.frontalRate * storm[c] * Math.min(2, baro[rowOf[c]] / 6) * (1 - continental) * leeFrontal[c] * dtDay;
           oceanEvapRate[c] = p.oceanEvapCoef * (speed[c] + 2) * dtDay;
         }
       }
@@ -706,7 +744,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         tsDay[c] = ts;
         // Weak temperature gradient: the free troposphere over hot land is barely warmer than
         // over the ocean at that latitude, so hot ground does not inflate saturation capacity.
-        capDay[c] = wsat(p, isLand[c] ? Math.min(t, ebm.ocean[d * nLat + rowOf[c]] + p.wtgLandOffsetC) : t);
+        capDay[c] = wsat(p, isLand[c] ? t - wtgWeight[rowOf[c]] * Math.max(0, t - ebm.ocean[d * nLat + rowOf[c]] - p.wtgLandOffsetC) : t);
+        frontCapDay[c] = p.frontalRhTrue ? wsat(p, t) : capDay[c];
         if (isLand[c]) {
           const q = ebm.insolation[d * nLat + rowOf[c]];
           const pt = 1.26 * ptFactor(ts) / 28.4 * dtDay;
@@ -763,10 +802,11 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           }
           w += evap / colFrac[c];
 
-          const rh = Math.min(1.2, w / (cap > 0.5 ? cap : 0.5));
+          const fc = frontCapDay[c];
+          const rh = Math.min(1.2, w / (fc > 0.5 ? fc : 0.5));
           const thresh = rhcCol[c] * cap;
           const condensed = w > thresh ? (w - thresh) * condense : 0;
-          let precip = condensed + w * frontal[c] * rh * rh;
+          let precip = condensed + w * frontal[c] * rh ** p.frontalRhExp;
           if (precip > w) precip = w;
           W[c] = w - precip;
           if (record && diag) {
