@@ -47,18 +47,18 @@ const DEFAULT_PARAMS = {
   plateauHeightM: 2500,
   plateauItczGain: 4.5,
   // Share of the land-driven ITCZ excursion by which the rain belt lags the heat trough.
-  rainBeltLag: 0.5,
+  rainBeltLag: 0.55,
   rainBeltPlateauCancel: 8,
   rainBeltMinShiftDeg: 12,
   // Tropical land share (40 degrees of longitude) over which the heat low develops.
   rainBeltLandMin: 0.75,
   rainBeltLandFull: 0.92,
   // Width of the transition from the rain belt into the dry heat low.
-  rainBeltEdgeDeg: 8,
-  // Monsoon-desert descent (Rodwell & Hoskins): plateau monsoon heating within this many
-  // degrees to the east forces subsidence over the land west of it (Arabia, Atacama).
-  rainBeltEastWindowDeg: 45,
-  rainBeltMonsoonDesertGain: 5,
+  rainBeltEdgeDeg: 12,
+  // Monsoon-desert descent (Rodwell & Hoskins): plateau monsoon heating to the east, weighted
+  // with this e-folding distance, forces subsidence over the land west of it (Arabia, Atacama).
+  rainBeltEastWindowDeg: 30,
+  rainBeltMonsoonDesertGain: 10,
   // Extra column humidity needed to rain under the heat low's subsiding lid.
   rainBeltRhRaise: 0.3,
   ascentBlurDeg: 3.125,
@@ -560,8 +560,13 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         hp += plateau[summer][jj];
       }
       let he = 0;
-      for (let k = 1; k <= rxEast; k++) he += plateau[summer][(j + k) % nLon];
-      eastPlateau[j] = he / Math.max(1, rxEast);
+      let we = 0;
+      for (let k = 1; k <= 3 * rxEast; k++) {
+        const w = Math.exp(-k / rxEast);
+        he += w * plateau[summer][(j + k) % nLon];
+        we += w;
+      }
+      eastPlateau[j] = he / we;
       const beltLand = s / (2 * rx + 1);
       beltLandFrac[j] = beltLand;
       const share = Math.min(1, p.monsoonLandGain * beltLand);
@@ -619,7 +624,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         for (let i = 0; i < nLat; i++) {
           const c = i * nLon + j;
           const dist = (rowLat[i] - rain) * side;
-          const capped = smoothstep(0, p.rainBeltEdgeDeg, dist) * (1 - smoothstep(span + 4, span + 10, dist));
+          const capped = heatLow * smoothstep(0, p.rainBeltEdgeDeg, dist) * (1 - smoothstep(span + 4, span + 10, dist));
           heatLowCap[c] = capped;
           if (ascent[c] > 0) ascent[c] *= 1 - capped;
         }

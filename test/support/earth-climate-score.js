@@ -19,6 +19,20 @@ const REGIONS = [
   ['Volga', 53, 48], ['Kazakh steppe', 48, 70], ['Yakutia', 62, 130], ['US Midwest', 42, -93]
 ];
 
+// Held-out check points: never inspected while tuning parameters, so their hit rate shows
+// whether fixes made for REGIONS generalise rather than overfit.
+const HOLDOUT_REGIONS = [
+  ['Ethiopia highlands', 9, 39], ['Madagascar east', -18, 48.5], ['Kalahari', -23, 22], ['Zambia', -14, 28],
+  ['Angola plateau', -12, 17], ['Gran Chaco', -23, -61], ['Sao Paulo', -22, -48], ['Sertao', -8, -40],
+  ['Llanos', 7, -68], ['Mexico plateau', 24, -103], ['Great Plains', 40, -101], ['Pacific Northwest', 46, -122],
+  ['Alaska interior', 64, -148], ['Quebec', 50, -72], ['Ireland', 53, -8], ['Spain interior', 40, -4],
+  ['Anatolia', 39, 33], ['Iran plateau', 32, 54], ['Thar', 27, 71], ['Mongolia', 47, 103],
+  ['Japan', 36, 138], ['Indochina', 15, 104], ['Sumatra', 0, 102], ['New Zealand west', -43, 171],
+  ['SE Australia', -36, 147], ['SW Australia', -32, 117], ['Top End', -13, 132], ['Baikal', 52, 105],
+  ['Morocco', 32, -6], ['Ukraine', 49, 32], ['Florida', 28, -81.5], ['Ghana', 7, -1.5],
+  ['Northeast China', 45, 126], ['Finland', 63, 26], ['Southern Africa east', -26, 31]
+];
+
 function pearson(xs, ys, ws) {
   let sw = 0; let mx = 0; let my = 0;
   for (let i = 0; i < xs.length; i++) { sw += ws[i]; mx += ws[i] * xs[i]; my += ws[i] * ys[i]; }
@@ -111,7 +125,7 @@ function score(cells, n, planet, obs) {
   }));
   const zonalRmse = Math.sqrt(zonal.reduce((s, z) => s + (z.model - z.obs) ** 2, 0) / zonal.length);
 
-  const regions = REGIONS.map(([name, lat, lon]) => {
+  const sample = (list) => list.map(([name, lat, lon]) => {
     const c = cellAt(cells, n, lat, lon);
     const o = annualObs(obs, lat, lon);
     return {
@@ -123,8 +137,10 @@ function score(cells, n, planet, obs) {
       land: c.isLand
     };
   });
-  const regionHits = regions.filter((r) => Number.isFinite(r.obs)
+  const hits = (list) => list.filter((r) => Number.isFinite(r.obs)
     && Math.abs(Math.log((r.model + 50) / (r.obs + 50))) < Math.log(1.6)).length;
+  const regions = sample(REGIONS);
+  const holdout = sample(HOLDOUT_REGIONS);
 
   return {
     budget: {
@@ -155,8 +171,10 @@ function score(cells, n, planet, obs) {
     },
     zonal,
     regions,
-    regionHits: `${regionHits}/${regions.length}`
+    regionHits: `${hits(regions)}/${regions.length}`,
+    holdout,
+    holdoutHits: `${hits(holdout)}/${holdout.length}`
   };
 }
 
-module.exports = { REGIONS, buildEarthCells, cellAt, annualObs, score };
+module.exports = { REGIONS, HOLDOUT_REGIONS, buildEarthCells, cellAt, annualObs, score };

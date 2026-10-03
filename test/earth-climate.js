@@ -15,7 +15,7 @@ const { buildEarthCells, cellAt, score } = require('./support/earth-climate-scor
 
 console.log('earth climate test...');
 
-const LIMITS = { rLog: 0.6, zonalRmse: 280, regionHits: 9 };
+const LIMITS = { rLog: 0.6, zonalRmse: 280, regionHits: 9, holdoutHits: 24 };
 const n = 48;
 const planet = normalizePlanet({});
 const cells = buildEarthCells(n, planet);
@@ -29,7 +29,7 @@ assert.equal(cellAt(cells, n, 42, 50).isLand, true, 'the Caspian is not part of 
 runClimateStage(cells, neighborTable, planet, 'earth', { resolutionDeg: 2 });
 const s = score(cells, n, planet, loadEarthClimatology());
 console.log(`  budget ${JSON.stringify(s.budget)}`);
-console.log(`  precip ${JSON.stringify(s.precip)} regions ${s.regionHits}`);
+console.log(`  precip ${JSON.stringify(s.precip)} regions ${s.regionHits} holdout ${s.holdoutHits}`);
 console.log(`  temp ${JSON.stringify(s.temp)}`);
 
 assert.ok(s.budget.landPrecipMm > 550 && s.budget.landPrecipMm < 950, `land precipitation ${s.budget.landPrecipMm} mm/yr (obs ~720)`);
@@ -41,6 +41,7 @@ assert.ok(Math.abs(s.precip.aridPct.model - s.precip.aridPct.obs) <= 6, `arid la
 assert.ok(s.temp.oceanRmse <= 2.8, `ocean temperature RMSE ${s.temp.oceanRmse} C`);
 assert.ok(s.temp.landRmse <= 4, `land temperature RMSE ${s.temp.landRmse} C`);
 assert.ok(Number(s.regionHits.split('/')[0]) >= LIMITS.regionHits, `regions within x1.6: ${s.regionHits}`);
+assert.ok(Number(s.holdoutHits.split('/')[0]) >= LIMITS.holdoutHits, `held-out regions within x1.6: ${s.holdoutHits}`);
 
 const KOPPEN_OBS = { A: 19, B: 30, C: 13, D: 25, E: 13 };
 const koppen = {};
