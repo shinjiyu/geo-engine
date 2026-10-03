@@ -46,6 +46,21 @@ const DEFAULT_PARAMS = {
   monsoonLandGain: 3.4375,
   plateauHeightM: 2500,
   plateauItczGain: 4.5,
+  // Share of the land-driven ITCZ excursion by which the rain belt lags the heat trough.
+  rainBeltLag: 0.5,
+  rainBeltPlateauCancel: 8,
+  rainBeltMinShiftDeg: 12,
+  // Tropical land share (40 degrees of longitude) over which the heat low develops.
+  rainBeltLandMin: 0.75,
+  rainBeltLandFull: 0.92,
+  // Width of the transition from the rain belt into the dry heat low.
+  rainBeltEdgeDeg: 8,
+  // Monsoon-desert descent (Rodwell & Hoskins): plateau monsoon heating within this many
+  // degrees to the east forces subsidence over the land west of it (Arabia, Atacama).
+  rainBeltEastWindowDeg: 45,
+  rainBeltMonsoonDesertGain: 5,
+  // Extra column humidity needed to rain under the heat low's subsiding lid.
+  rainBeltRhRaise: 0.3,
   ascentBlurDeg: 3.125,
   tradeU: 7,
   tradeV: 1.726,
@@ -347,6 +362,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   const v = new Float64Array(size);
   const speed = new Float64Array(size);
   const ascent = new Float64Array(size);
+  const heatLowCap = new Float64Array(size);
   const baro = new Float64Array(nLat);
   const depIdx = new Int32Array(size * 4);
   const depW = new Float64Array(size * 4);
@@ -431,11 +447,15 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   const anomalyCache = new Array(12).fill(null);
   const diag = p.diagnostics ? {
     itcz: new Array(12),
+    plateauFrac: new Array(12),
+    beltLandFrac: new Array(12),
+    phiOcean: new Float64Array(12),
     vapour: new Float32Array(12 * size),
     ascent: new Float32Array(12 * size),
     u: new Float32Array(12 * size),
     v: new Float32Array(12 * size),
     marine: new Float32Array(12 * size),
+    columnRh: new Float32Array(12 * size),
     orographicRain: new Float32Array(12 * size),
     condensationRain: new Float32Array(12 * size),
     frontalRain: new Float32Array(12 * size)
@@ -450,55 +470,19 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     return marine[c] * to + (1 - marine[c]) * tl + marineAnomaly[c];
   };
 
-  function prepareMonth(m) {
-    const day = Math.floor((m + 0.5) * DAYS / 12);
-    for (let c = 0; c < size; c++) tsl[c] = columnTemp(day, c);
-
-    // ITCZ: oceanic thermal equator, pulled toward the continental one where the tropics hold land.
-    const thermalEquator = (series, maxLat) => {
-      let tMax = -Infinity;
-      for (let i = 0; i < nLat; i++) if (Math.abs(rowLat[i]) <= maxLat) tMax = Math.max(tMax, series[day * nLat + i]);
-      let sw = 0;
-      let sl = 0;
-      for (let i = 0; i < nLat; i++) {
-        if (Math.abs(rowLat[i]) > maxLat) continue;
-        const w = Math.exp((series[day * nLat + i] - tMax) / 1.5);
-        sw += w;
-        sl += w * rowLat[i];
-      }
-      return sl / sw;
-    };
-    const phiOcean = thermalEquator(ebm.ocean, 30);
-    const phiLandRaw = thermalEquator(ebm.land, 35);
-    const phiLand = p.itczShiftFactor * phiLandRaw;
-    const itcz = new Float64Array(nLon);
-    const rx = Math.round(20 / grid.res);
-    const summer = phiLand >= 0 ? 0 : 1;
-    for (let j = 0; j < nLon; j++) {
-      let s = 0;
-      let hp = 0;
-      for (let k = -rx; k <= rx; k++) {
-        const jj = ((j + k) % nLon + nLon) % nLon;
-        s += belt[summer][jj];
-        hp += plateau[summer][jj];
-      }
-      const share = Math.min(1, p.monsoonLandGain * s / (2 * rx + 1));
-      const plateauPull = p.plateauItczGain * (hp / (2 * rx + 1)) * phiLandRaw;
-      itcz[j] = clamp(phiOcean + share * (phiLand - phiOcean) + plateauPull, -30, 30);
-    }
-    if (diag) diag.itcz[m] = Float64Array.from(itcz);
-
-    // Base circulation.
-    const baseU = new Float64Array(size);
-    const baseV = new Float64Array(size);
+  /**
+   * Three-cell surface winds per longitude: trades converge on `phiOf[j]`; the Hadley edges and
+   * polar fronts follow `cellPhiOf[j]` (the ITCZ by default).
+   */
+  function baseCirculation(phiOf, baseU, baseV, stormOut, cellPhiOf = phiOf) {
     for (let i = 0; i < nLat; i++) {
       const lat = rowLat[i];
       for (let j = 0; j < nLon; j++) {
-        const phi = itcz[j];
-        const edgeN = p.hadleyEdgeDeg + 0.4 * phi;
-        const edgeS = -p.hadleyEdgeDeg + 0.4 * phi;
-        const frontN = p.polarFrontDeg + 0.2 * phi;
-        const frontS = -p.polarFrontDeg + 0.2 * phi;
+        const phi = phiOf[j];
+        const edgeN = p.hadleyEdgeDeg + 0.4 * cellPhiOf[j];
+        const edgeS = -p.hadleyEdgeDeg + 0.4 * cellPhiOf[j];
+        const frontN = p.polarFrontDeg + 0.2 * cellPhiOf[j];
+        const frontS = -p.polarFrontDeg + 0.2 * cellPhiOf[j];
         let bu;
         let bv;
         let st = 0;
@@ -532,11 +516,70 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           bv = p.polarV * amp;
           st = p.polarFrontalShare;
         }
-        storm[i * nLon + j] = st;
+        if (stormOut) stormOut[i * nLon + j] = st;
         baseU[i * nLon + j] = bu * rot;
         baseV[i * nLon + j] = bv;
       }
     }
+  }
+
+  function prepareMonth(m) {
+    const day = Math.floor((m + 0.5) * DAYS / 12);
+    for (let c = 0; c < size; c++) tsl[c] = columnTemp(day, c);
+
+    // ITCZ: oceanic thermal equator, pulled toward the continental one where the tropics hold land.
+    const thermalEquator = (series, maxLat) => {
+      let tMax = -Infinity;
+      for (let i = 0; i < nLat; i++) if (Math.abs(rowLat[i]) <= maxLat) tMax = Math.max(tMax, series[day * nLat + i]);
+      let sw = 0;
+      let sl = 0;
+      for (let i = 0; i < nLat; i++) {
+        if (Math.abs(rowLat[i]) > maxLat) continue;
+        const w = Math.exp((series[day * nLat + i] - tMax) / 1.5);
+        sw += w;
+        sl += w * rowLat[i];
+      }
+      return sl / sw;
+    };
+    const phiOcean = thermalEquator(ebm.ocean, 30);
+    const phiLandRaw = thermalEquator(ebm.land, 35);
+    const phiLand = p.itczShiftFactor * phiLandRaw;
+    const itcz = new Float64Array(nLon);
+    const plateauFrac = new Float64Array(nLon);
+    const beltLandFrac = new Float64Array(nLon);
+    const eastPlateau = new Float64Array(nLon);
+    const rx = Math.round(20 / grid.res);
+    const rxEast = Math.round(p.rainBeltEastWindowDeg / grid.res);
+    const summer = phiLand >= 0 ? 0 : 1;
+    for (let j = 0; j < nLon; j++) {
+      let s = 0;
+      let hp = 0;
+      for (let k = -rx; k <= rx; k++) {
+        const jj = ((j + k) % nLon + nLon) % nLon;
+        s += belt[summer][jj];
+        hp += plateau[summer][jj];
+      }
+      let he = 0;
+      for (let k = 1; k <= rxEast; k++) he += plateau[summer][(j + k) % nLon];
+      eastPlateau[j] = he / Math.max(1, rxEast);
+      const beltLand = s / (2 * rx + 1);
+      beltLandFrac[j] = beltLand;
+      const share = Math.min(1, p.monsoonLandGain * beltLand);
+      plateauFrac[j] = hp / (2 * rx + 1);
+      const plateauPull = p.plateauItczGain * plateauFrac[j] * phiLandRaw;
+      itcz[j] = clamp(phiOcean + share * (phiLand - phiOcean) + plateauPull, -30, 30);
+    }
+    if (diag) {
+      diag.itcz[m] = Float64Array.from(itcz);
+      diag.plateauFrac[m] = plateauFrac;
+      diag.beltLandFrac[m] = beltLandFrac;
+      diag.phiOcean[m] = phiOcean;
+    }
+
+    // Base circulation.
+    const baseU = new Float64Array(size);
+    const baseV = new Float64Array(size);
+    baseCirculation(itcz, baseU, baseV, storm);
 
     // Large-scale ascent from base-flow convergence (1e-6 s^-1).
     const dx = (k) => grid.res * DEG * radiusM * Math.max(0.05, rowCos[k]);
@@ -557,6 +600,31 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     }
     const div = blurField(grid, divRaw, p.ascentBlurDeg, 1);
     for (let c = 0; c < size; c++) ascent[c] = -div[c];
+    // Where a wide continent drags the trough far from the ocean ITCZ, the trough's poleward
+    // part is a shallow dry heat low under subsiding air (the Saharan heat low north of the
+    // Sahel rain belt): its convergence lifts no deep convection. High plateaus keep theirs,
+    // and their monsoon heating extends the subsiding heat low over the land to their west.
+    heatLowCap.fill(0);
+    if (p.rainBeltLag > 0) {
+      for (let j = 0; j < nLon; j++) {
+        const phi = itcz[j];
+        const heatLow = smoothstep(0.5 * p.rainBeltMinShiftDeg, p.rainBeltMinShiftDeg, Math.abs(phi - phiOcean))
+          * Math.max(0, 1 - p.rainBeltPlateauCancel * plateauFrac[j])
+          * Math.min(1, smoothstep(p.rainBeltLandMin, p.rainBeltLandFull, beltLandFrac[j])
+            + p.rainBeltMonsoonDesertGain * eastPlateau[j]);
+        if (heatLow <= 0) continue;
+        const rain = phi - p.rainBeltLag * heatLow * (phi - phiOcean);
+        const side = Math.sign(phi - rain);
+        const span = Math.abs(phi - rain);
+        for (let i = 0; i < nLat; i++) {
+          const c = i * nLon + j;
+          const dist = (rowLat[i] - rain) * side;
+          const capped = smoothstep(0, p.rainBeltEdgeDeg, dist) * (1 - smoothstep(span + 4, span + 10, dist));
+          heatLowCap[c] = capped;
+          if (ascent[c] > 0) ascent[c] *= 1 - capped;
+        }
+      }
+    }
 
     // Thermal-low winds toward large-scale warm anomalies.
     const anomaly = new Float64Array(size);
@@ -614,9 +682,10 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     for (let c = 0; c < size; c++) {
       let conv = clamp(Math.exp(-p.convergenceFactor * divSmooth[c] * dtStep), 0.7, 1.4);
       if (conv > 1 && isLand[c]) {
-        // Away from the ITCZ, continental lows are shallow and capped: they gather little vapour.
+        // Away from the ITCZ, and in the dry heat low, continental lows are shallow and capped:
+        // they gather little vapour.
         const off = Math.abs(rowLat[rowOf[c]] - itcz[c % nLon]);
-        const tropical = smoothstep(p.convTropicsDeg + 10, p.convTropicsDeg, off);
+        const tropical = smoothstep(p.convTropicsDeg + 10, p.convTropicsDeg, off) * (1 - heatLowCap[c]);
         conv = 1 + (conv - 1) * (tropical + (1 - tropical) * p.extratropLandConv);
       }
       convergence[c] = conv;
@@ -769,7 +838,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         prepareMonth(m);
         for (let c = 0; c < size; c++) {
           const asc = ascent[c];
-          rhcCol[c] = clamp(p.rhBase - p.rhAscent * Math.max(0, asc) + p.rhSubsidence * Math.max(0, -asc), p.rhMin, p.rhMax);
+          rhcCol[c] = clamp(p.rhBase - p.rhAscent * Math.max(0, asc) + p.rhSubsidence * Math.max(0, -asc)
+            + p.rainBeltRhRaise * heatLowCap[c], p.rhMin, p.rhMax);
           // Storm tracks feed on ocean air and weaken as cyclones travel deep into continents.
           const continental = isLand[c] ? p.frontalContinentality * (1 - marine[c]) : 0;
           frontal[c] = p.frontalRate * storm[c] * Math.min(2, baro[rowOf[c]] / 6) * (1 - continental) * leeFrontal[c] * dtDay;
@@ -902,6 +972,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           diag.u[k] += u[c] * f;
           diag.v[k] += v[c] * f;
           diag.marine[k] += marine[c] * f;
+          diag.columnRh[k] += (capDay[c] > 0.5 ? W[c] / capDay[c] : 0) * f;
         }
       }
       if (record) {
