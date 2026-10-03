@@ -33,15 +33,21 @@ function normalizePlanet(input) {
   };
 }
 
+/** Snow line as height above sea level. */
 function snowLineElevationM(planet, absLatDeg) {
   return planet.snowLineEquatorM - planet.snowLineLatSlopeM * absLatDeg;
 }
 
-/** Alpine / permanent snow — not polar tundra */
-function isAlpineSnow(elevationM, absLatDeg, tempC, planetInput) {
+/** Cell elevations are absolute (sea surface sits at `seaLevelM`); thresholds use height above sea. */
+function heightAboveSeaM(elevationM, planetInput) {
+  return elevationM - normalizePlanet(planetInput).seaLevelM;
+}
+
+/** Alpine / permanent snow — not polar tundra. `heightM` is height above sea level. */
+function isAlpineSnow(heightM, absLatDeg, tempC, planetInput) {
   const planet = normalizePlanet(planetInput);
   const snowLine = snowLineElevationM(planet, absLatDeg);
-  return elevationM >= snowLine - 200 && tempC < 8;
+  return heightM >= snowLine - 200 && tempC < 8;
 }
 
 function clamp(v, lo, hi) {
@@ -64,6 +70,7 @@ module.exports = {
   DEFAULT_OBLIQUITY,
   normalizePlanet,
   snowLineElevationM,
+  heightAboveSeaM,
   isAlpineSnow,
   graticuleLatitudes
 };

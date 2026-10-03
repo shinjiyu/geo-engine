@@ -14,7 +14,7 @@ const world = createWorld({
 });
 
 assert.equal(world.schemaVersion, 1);
-assert.equal(world.engineVersion, '0.13.0');
+assert.equal(world.engineVersion, require('../package.json').version);
 assert.match(world.configFingerprint, /^sha256:/);
 
 const features = contract.searchFeatures(world, {

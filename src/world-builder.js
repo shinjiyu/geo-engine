@@ -10,10 +10,9 @@ const {
   EARTH_RADIUS_KM
 } = require('./topology/cube-sphere');
 const { generateTerrain, TERRAIN } = require('./generate/terrain');
-const { applyClimateToCells, reclassifyZonesFromWater } = require('./generate/climate');
 const { runHydrology, extractMountainRanges } = require('./generate/hydrology');
 const { runSurfaceFeatures } = require('./generate/surface-features');
-const { applyWaterCycleToCells } = require('./generate/water-cycle');
+const { runClimateStage } = require('./generate/climate-stage');
 const { normalizePlanet } = require('./planet/params');
 const {
   generateRealms,
@@ -30,8 +29,8 @@ const { deriveWorldProfile } = require('./facts/derive-world-profile');
 
 const WORLDS_DIR = path.join(__dirname, '../worlds');
 const GEO_SCHEMA_VERSION = 1;
-const GEO_ENGINE_VERSION = '0.13.0';
-const GEO_PIPELINE_ID = 'orogen-climate-watercycle-ecology-v1';
+const GEO_ENGINE_VERSION = '0.15.0';
+const GEO_PIPELINE_ID = 'orogen-seasonal-climate-drainage-v3';
 
 function configFingerprint(config) {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex')}`;
@@ -102,15 +101,14 @@ function createWorld(rawConfig) {
     if (c) c.areaWeight = Math.round(w * 1000) / 1000;
   }
 
-  applyClimateToCells(cells, config.planet, seed);
-  applyWaterCycleToCells(cells, neighborTable, config.planet, { weeks: 52 });
-  reclassifyZonesFromWater(cells, config.planet);
+  const climate = runClimateStage(cells, neighborTable, config.planet, seed);
   markCoasts(cells, neighborTable);
 
-  const rivers = runHydrology(cells, n, {});
+  const hydrology = runHydrology(cells, n, { planet: config.planet, neighborTable });
+  const rivers = hydrology.rivers;
   const surface = runSurfaceFeatures(cells, neighborTable, config.planet, {
     geography: config.seedWorld.geography,
-    minRiverFlow: 28
+    lakes: hydrology.lakes
   });
   const mountains = extractMountainRanges(cells, n);
   const magicGeography = generateMagicGeography(seed, cells, neighborTable, {
@@ -176,6 +174,8 @@ function createWorld(rawConfig) {
       cellsPerFaceEdge: n,
       totalCells: cells.size,
       terrainBackend: cells.terrainBackend,
+      climateModel: climate.model,
+      climateResolutionDeg: climate.resolutionDeg,
       landCells: landCount,
       oceanPercent: oceanPct,
       radiusKm: config.planet.radiusKm,

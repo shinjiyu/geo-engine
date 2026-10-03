@@ -1,12 +1,14 @@
 'use strict';
 
-const { extractRiverNetwork } = require('./river-network');
+const { runDrainage } = require('./drainage');
+const { normalizePlanet } = require('../planet/params');
 const { TERRAIN } = require('./terrain');
 
-function runHydrology(cells, n, options) {
+/** Lakes and rivers from one drainage model: depression filling, lake water balance, river tree. */
+function runHydrology(cells, n, options = {}) {
   const { buildNeighborTable } = require('../topology/cube-sphere');
-  const neighborTable = buildNeighborTable(n);
-  return extractRiverNetwork(cells, neighborTable, options);
+  const neighborTable = options.neighborTable || buildNeighborTable(n);
+  return runDrainage(cells, neighborTable, normalizePlanet(options.planet), options.drainage);
 }
 
 function extractMountainRanges(cells, n) {

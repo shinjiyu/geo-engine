@@ -83,10 +83,10 @@ async function handleRequest(req, res) {
       return sendJson(res, 200, {
         ok: true,
         service: 'geo-engine',
-        version: '0.13.0',
+        version: require('./package.json').version,
         mode: 'world-orogen-cube-sphere',
         terrainBackend: 'world-orogen',
-        waterCycle: 'surface-column-ca-52w',
+        waterCycle: 'latlon-seasonal-v1',
         renderMesh: 'cube-sphere-raster-globe',
         mapLayers: VALID_LAYERS,
         projections: ['web-mercator', 'equirectangular', 'cube-face', 'globe']

@@ -327,7 +327,7 @@
   async function generateWorld() {
     const seed = dom.seed.value.trim() || 'mesh-demo';
     const planet = planetFromUI();
-    const n = 16 + Math.max(0, subdiv - 4) * 8;
+    const n = { 4: 32, 5: 64, 6: 128 }[subdiv] || 64;
     setBusy(true, 'World Orogen 生成中…（板块 + 造山 + 水循环）');
     try {
       const response = await fetch('/worlds', {

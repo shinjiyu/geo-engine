@@ -75,41 +75,26 @@ function haversineKm(lat1, lon1, lat2, lon2, radiusKm = EARTH_RADIUS_KM) {
   return 2 * radiusKm * Math.asin(Math.sqrt(a));
 }
 
+/**
+ * Edge-adjacent cells in the order [u+1, u-1, v-1, v+1]. Steps that leave the face extend
+ * the face plane by one cell and project onto the adjacent face.
+ */
 function buildNeighborTable(n) {
   const table = new Map();
-  const step = 2 / n;
+  const offsets = [[1, 0], [-1, 0], [0, -1], [0, 1]];
 
   for (let face = 0; face < 6; face++) {
     for (let u = 0; u < n; u++) {
       for (let v = 0; v < n; v++) {
-        const key = cellKey(face, u, v);
-        const c = faceUVToVector(face, u, v, n);
-        const cu = faceUVToVector(face, Math.min(n - 1, u + 1), v, n);
-        const cl = faceUVToVector(face, Math.max(0, u - 1), v, n);
-        const cv = faceUVToVector(face, u, Math.min(n - 1, v + 1), n);
-        const cn = faceUVToVector(face, u, Math.max(0, v - 1), n);
-
-        let east = { x: cu.x - cl.x, y: cu.y - cl.y, z: cu.z - cl.z };
-        let north = { x: cn.x - cv.x, y: cn.y - cv.y, z: cn.z - cv.z };
-        const el = Math.hypot(east.x, east.y, east.z) || 1;
-        east = { x: east.x / el, y: east.y / el, z: east.z / el };
-        const nl = Math.hypot(north.x, north.y, north.z) || 1;
-        north = { x: north.x / nl, y: north.y / nl, z: north.z / nl };
-
-        const dirs = [
-          { x: c.x + east.x * step, y: c.y + east.y * step, z: c.z + east.z * step },
-          { x: c.x - east.x * step, y: c.y - east.y * step, z: c.z - east.z * step },
-          { x: c.x + north.x * step, y: c.y + north.y * step, z: c.z + north.z * step },
-          { x: c.x - north.x * step, y: c.y - north.y * step, z: c.z - north.z * step }
-        ];
-
-        const neighbors = dirs.map((d) => {
-          const len = Math.hypot(d.x, d.y, d.z);
-          const nc = vectorToCell(d.x / len, d.y / len, d.z / len, n);
+        const neighbors = offsets.map(([du, dv]) => {
+          const nu = u + du;
+          const nv = v + dv;
+          if (nu >= 0 && nu < n && nv >= 0 && nv < n) return cellKey(face, nu, nv);
+          const p = faceUVToVector(face, nu, nv, n);
+          const nc = vectorToCell(p.x, p.y, p.z, n);
           return cellKey(nc.face, nc.u, nc.v);
         });
-
-        table.set(key, neighbors);
+        table.set(cellKey(face, u, v), neighbors);
       }
     }
   }

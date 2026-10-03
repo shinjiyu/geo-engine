@@ -38,10 +38,10 @@ function surveyWorld(seed) {
       continue;
     }
     land++;
-    if (cell.terrain === 'mountain' || cell.elevation > 2600) mountain++;
+    if (cell.terrain === 'mountain' || cell.elevation - planet.seaLevelM > 1700) mountain++;
     const absLat = Math.abs(cell.lat);
     const snowLine = snowLineElevationM(planet, absLat);
-    const alpine = isAlpineSnow(cell.elevation, absLat, cell.tempC, planet);
+    const alpine = isAlpineSnow(cell.elevation - planet.seaLevelM, absLat, cell.tempC, planet);
     if (alpine) alpineSnow++;
     else if (cell.climateZone === 'polar' || cell.climateZone === 'snow') {
       if (absLat >= planet.polarCircleLat - 2) polarLand++;

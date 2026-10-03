@@ -9,7 +9,12 @@ const {
 const { normalizePlanet, snowLineElevationM } = require('../planet/params');
 const { createElevationField } = require('./elevation-field');
 const { generateOrogenTerrain } = require('./orogen-terrain');
-const { resolveOceanMaskOnCells } = require('./ocean-connectivity');
+const { resolveOceanMaskOnCells, openNarrowStraits } = require('./ocean-connectivity');
+
+// Heightmap cells sample their footprint (at least one source-data spacing wide) so straits
+// narrower than a cell keep seas connected.
+const FOOTPRINT_SAMPLES = 7;
+const MAX_STRAIT_KM = 400;
 
 function unitNormal(x, y, z) {
   const length = Math.hypot(x, y, z) || 1;
@@ -56,6 +61,10 @@ const TERRAIN = {
   ICE: 'ice'
 };
 
+// Heights above sea level; equal to the former absolute thresholds at the default 900 m sea level.
+const MOUNTAIN_HEIGHT_M = 1700;
+const HILL_HEIGHT_M = 300;
+
 const elevationCache = new Map();
 
 function getElevationSampler(seed) {
@@ -75,9 +84,10 @@ function assignCellTerrain(cell, planet, seaLevelM) {
   }
 
   const snowLine = snowLineElevationM(planet, absLat);
-  if (cell.elevation >= snowLine - 150) cell.terrain = TERRAIN.SNOW;
-  else if (cell.elevation > 2600) cell.terrain = TERRAIN.MOUNTAIN;
-  else if (cell.elevation > 1200) cell.terrain = TERRAIN.HILL;
+  const heightM = cell.elevation - seaLevelM;
+  if (heightM >= snowLine - 150) cell.terrain = TERRAIN.SNOW;
+  else if (heightM > MOUNTAIN_HEIGHT_M) cell.terrain = TERRAIN.MOUNTAIN;
+  else if (heightM > HILL_HEIGHT_M) cell.terrain = TERRAIN.HILL;
   else cell.terrain = TERRAIN.PLAIN;
 
   if (cell.inlandBasinFilled && cell.elevation <= seaLevelM) {
@@ -89,12 +99,18 @@ function generateTerrain(seed, n, options = {}) {
   const planet = normalizePlanet(options.planet || options);
   const seaLevelM = options.seaLevelM ?? planet.seaLevelM;
   const backend = options.backend || 'orogen';
+  if (backend === 'heightmap' && typeof options.sampleHeightM !== 'function') {
+    throw new Error('heightmap backend requires options.sampleHeightM(latDeg, lonDeg) -> metres above sea level');
+  }
   const orogen = backend === 'orogen'
     ? generateOrogenTerrain(seed, n, options.orogen)
     : null;
   const sampleElev = backend === 'noise' ? getElevationSampler(seed) : null;
   const cells = new Map();
   const neighborTable = buildNeighborTable(n);
+  const footprintMin = backend === 'heightmap' ? new Map() : null;
+  const footprintHalf = Math.max(0.5, 0.6 * (options.heightmapSpacingDeg || 0) / (90 / n));
+  const footprintOffsets = Array.from({ length: FOOTPRINT_SAMPLES }, (_, i) => footprintHalf * (2 * i / (FOOTPRINT_SAMPLES - 1) - 1));
   let regionIndex = 0;
 
   for (let face = 0; face < 6; face++) {
@@ -102,9 +118,21 @@ function generateTerrain(seed, n, options = {}) {
       for (let v = 0; v < n; v++) {
         const vector = faceUVToVector(face, u, v, n);
         const { lat, lon } = vectorToLatLon(vector.x, vector.y, vector.z);
-        const elevation = orogen
-          ? seaLevelM + orogen.elevationM[regionIndex]
-          : sampleElev(vector.x, vector.y, vector.z);
+        let elevation;
+        if (orogen) elevation = seaLevelM + orogen.elevationM[regionIndex];
+        else if (backend === 'heightmap') elevation = seaLevelM + options.sampleHeightM(lat, lon);
+        else elevation = sampleElev(vector.x, vector.y, vector.z);
+        if (footprintMin) {
+          let lowest = elevation;
+          for (const du of footprintOffsets) {
+            for (const dv of footprintOffsets) {
+              const s = faceUVToVector(face, u + du, v + dv, n);
+              const ll = vectorToLatLon(s.x, s.y, s.z);
+              lowest = Math.min(lowest, seaLevelM + options.sampleHeightM(ll.lat, ll.lon));
+            }
+          }
+          footprintMin.set(cellKey(face, u, v), lowest);
+        }
 
         cells.set(cellKey(face, u, v), {
           face,
@@ -135,10 +163,14 @@ function generateTerrain(seed, n, options = {}) {
     }
   }
 
-  const oceanStats = resolveOceanMaskOnCells(cells, neighborTable);
+  const cellKm = (Math.PI / 2) * planet.radiusKm / n;
+  const straitsOpened = footprintMin
+    ? openNarrowStraits(cells, neighborTable, footprintMin, seaLevelM, Math.max(2, Math.round(MAX_STRAIT_KM / cellKm)))
+    : 0;
+  const oceanStats = { ...resolveOceanMaskOnCells(cells, neighborTable), straitsOpened };
   for (const cell of cells.values()) assignCellTerrain(cell, planet, seaLevelM);
   cells.oceanStats = oceanStats;
-  cells.terrainBackend = backend === 'orogen' ? 'world-orogen' : 'noise';
+  cells.terrainBackend = { orogen: 'world-orogen', heightmap: 'heightmap' }[backend] || 'noise';
   return cells;
 }
 
@@ -155,9 +187,10 @@ function sampleTerrainAtUnitVector(seed, x, y, z, options = {}) {
 
   let terrain = TERRAIN.DEEP_OCEAN;
   if (isLand) {
-    if (elevation >= snowLine - 150) terrain = TERRAIN.SNOW;
-    else if (elevation > 2600) terrain = TERRAIN.MOUNTAIN;
-    else if (elevation > 1200) terrain = TERRAIN.HILL;
+    const heightM = elevation - seaLevelM;
+    if (heightM >= snowLine - 150) terrain = TERRAIN.SNOW;
+    else if (heightM > MOUNTAIN_HEIGHT_M) terrain = TERRAIN.MOUNTAIN;
+    else if (heightM > HILL_HEIGHT_M) terrain = TERRAIN.HILL;
     else terrain = TERRAIN.PLAIN;
   } else if (elevation > seaLevelM - 400) {
     terrain = TERRAIN.OCEAN;
@@ -197,6 +230,8 @@ function applyMagicLevel(cells, magic) {
 
 module.exports = {
   TERRAIN,
+  MOUNTAIN_HEIGHT_M,
+  HILL_HEIGHT_M,
   generateTerrain,
   applyMagicLevel,
   sampleTerrainAtUnitVector
