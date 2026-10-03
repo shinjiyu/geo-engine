@@ -7,7 +7,7 @@
 
 const { computeAreaWeights, vectorToCell, cellKey } = require('../../src/topology/cube-sphere');
 const { generateTerrain } = require('../../src/generate/terrain');
-const { loadEarthHeightSampler, isIceSheet } = require('./earth-reference');
+const { loadEarthHeightSampler, isIceSheet, wasGlaciatedLGM } = require('./earth-reference');
 
 const REGIONS = [
   ['Sahara', 23, 10], ['Arabia', 22, 47], ['Tarim', 39, 83], ['Gobi', 43, 105],
@@ -38,6 +38,7 @@ function buildEarthCells(n, planet) {
     const c = cells.get(k);
     if (c) c.areaWeight = w;
   }
+  for (const c of cells.values()) c.glaciatedLGM = wasGlaciatedLGM(c.lat, c.lon);
   return cells;
 }
 

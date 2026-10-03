@@ -515,6 +515,7 @@ function interpolatedCellFields(world, vec) {
   let runoff = 0;
   let aridScore = 0;
   let tundra = 0;
+  let lakeLevelM = -Infinity;
   for (const [u, v, weight] of corners) {
     const corner = faceUVToVector(face, u, v, n);
     const cell = lookupCell(world.cells, n, corner.x, corner.y, corner.z);
@@ -523,6 +524,7 @@ function interpolatedCellFields(world, vec) {
     runoff += Math.max(0, cell?.runoff || 0) * weight;
     aridScore += (cell?.aridScore || 0) * weight;
     tundra += tundraShare(cell) * weight;
+    if (cell?.isLake && Number.isFinite(cell.waterLevelM)) lakeLevelM = Math.max(lakeLevelM, cell.waterLevelM);
   }
   return {
     elevation,
@@ -530,6 +532,7 @@ function interpolatedCellFields(world, vec) {
     runoff,
     aridScore,
     tundra,
+    lakeLevelM,
     nearest: lookupCell(world.cells, n, vec.x, vec.y, vec.z)
   };
 }
@@ -600,8 +603,9 @@ function buildRegionRaster(world, options) {
       runoffMm[index] = fields.runoff;
       aridScore[index] = fields.aridScore;
       tundra[index] = fields.tundra;
-      lake[index] = fields.nearest?.isLake ? 1 : 0;
-      riverLand[index] = !fields.nearest?.isLake && elevation[index] > seaLevelM ? 1 : 0;
+      // A lake fills its basin up to the water level, so the shore follows the relief, not the grid.
+      lake[index] = elevation[index] <= fields.lakeLevelM ? 1 : 0;
+      riverLand[index] = !lake[index] && elevation[index] > seaLevelM ? 1 : 0;
     }
   }
 
@@ -622,7 +626,7 @@ function buildRegionRaster(world, options) {
         const weight = reliefM < 1600 ? 1 : 0.55;
         rgba = climateTint(rgba, aridScore[index] * weight, tundra[index] * weight);
       }
-      const shade = Math.max(0.62, Math.min(1.22, 0.92 + (left - right + down - up) / 900));
+      const shade = lake[index] ? 1 : Math.max(0.62, Math.min(1.22, 0.92 + (left - right + down - up) / 900));
       rgba = [
         Math.round(rgba[0] * shade),
         Math.round(rgba[1] * shade),
@@ -633,9 +637,9 @@ function buildRegionRaster(world, options) {
       const relative = here - seaLevelM;
       const rightRelative = right - seaLevelM;
       const downRelative = down - seaLevelM;
-      const water = relative <= 0 || lake[index];
-      const rightWater = rightRelative <= 0 || lake[py * width + Math.min(width - 1, px + 1)];
-      const downWater = downRelative <= 0 || lake[Math.min(height - 1, py + 1) * width + px];
+      const water = relative <= 0 || lake[index] === 1;
+      const rightWater = rightRelative <= 0 || lake[py * width + Math.min(width - 1, px + 1)] === 1;
+      const downWater = downRelative <= 0 || lake[Math.min(height - 1, py + 1) * width + px] === 1;
       const coast = water !== rightWater || water !== downWater;
       const contourStep = Math.abs(relative) >= 2000 ? 500 : 250;
       const contour = relative > 0 && !lake[index] && (

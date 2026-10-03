@@ -27,7 +27,7 @@ assert.ok(occupied.every(
   (cell) => cell.isLake || cell.vegetation === 'wetland' || cell.terrain === 'coast'
 ), 'aquatic realm may only occupy lake or shoreline habitat');
 
-const unsupported = fishfolkWorld('ecology-survey-8');
+const unsupported = fishfolkWorld('ecology-survey-16');
 assert.deepEqual(unsupported.speciesSelection.supported, []);
 assert.deepEqual(unsupported.speciesSelection.unsupported, ['freshwater_fishfolk']);
 assert.equal(

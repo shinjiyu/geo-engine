@@ -13,6 +13,7 @@ const { generateTerrain, TERRAIN } = require('./generate/terrain');
 const { runHydrology, extractMountainRanges } = require('./generate/hydrology');
 const { runSurfaceFeatures } = require('./generate/surface-features');
 const { runClimateStage } = require('./generate/climate-stage');
+const { scourGlacialBasins } = require('./generate/glacial-scour');
 const { normalizePlanet } = require('./planet/params');
 const {
   generateRealms,
@@ -30,7 +31,7 @@ const { deriveWorldProfile } = require('./facts/derive-world-profile');
 const WORLDS_DIR = path.join(__dirname, '../worlds');
 const GEO_SCHEMA_VERSION = 1;
 const GEO_ENGINE_VERSION = '0.15.0';
-const GEO_PIPELINE_ID = 'orogen-seasonal-climate-drainage-v4';
+const GEO_PIPELINE_ID = 'orogen-seasonal-climate-scour-drainage-v5';
 
 function configFingerprint(config) {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex')}`;
@@ -103,6 +104,7 @@ function createWorld(rawConfig) {
 
   const climate = runClimateStage(cells, neighborTable, config.planet, seed);
   markCoasts(cells, neighborTable);
+  scourGlacialBasins(cells, neighborTable, config.planet, seed);
 
   const hydrology = runHydrology(cells, n, { planet: config.planet, neighborTable });
   const rivers = hydrology.rivers;

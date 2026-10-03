@@ -43,6 +43,23 @@ function isIceSheet(lat, lon) {
 }
 
 /**
+ * Coarse outline of the last-glacial-maximum ice sheets (~21 ka). The 1 degree relief cannot
+ * resolve outlet gorges, so drainage needs to know which basins were scoured too recently to
+ * have been cut through or silted up.
+ */
+function wasGlaciatedLGM(lat, lon) {
+  if (isIceSheet(lat, lon)) return true;
+  const beringia = lon < -130 && lat < 70;
+  if (lon >= -141 && lon <= -52 && !beringia) return lat >= (lon > -100 ? 40 : 47);
+  if (lon >= -25 && lon <= -12) return lat >= 63 && lat <= 67;
+  if (lon >= 5 && lon <= 16 && lat >= 45.5 && lat <= 48) return true;
+  if (lon >= -11 && lon <= 30) return lat >= 52;
+  if (lon > 30 && lon <= 60) return lat >= 57;
+  if (lon > 60 && lon <= 100) return lat >= 68;
+  return lat <= -40 && lon >= -76 && lon <= -68;
+}
+
+/**
  * Monthly observed climatologies on their native 2.5 degree grids.
  * precip(m, lat, lon) -> mm/month or NaN (ocean / no data); temp(m, lat, lon) -> degC.
  * tempAt(m, lat, lon, heightM) moves the reanalysis temperature from its own smoothed
@@ -95,4 +112,4 @@ function loadEarthClimatology(lapseRateC = 6.5) {
   };
 }
 
-module.exports = { loadEarthHeightSampler, loadEarthClimatology, isIceSheet };
+module.exports = { loadEarthHeightSampler, loadEarthClimatology, isIceSheet, wasGlaciatedLGM };

@@ -8,8 +8,21 @@ const DEFAULTS = {
   minRiverAreaKm2: 25000,
   // ~30 m3/s: below this a channel is dry for part of most years.
   minRiverDischargeKm3: 1,
-  minRiverLengthKm: 150
+  minRiverLengthKm: 150,
+  // An overflowing river saws through its sill: outside freshly ice-scoured ground, an open basin
+  // shallower than this many metres per sqrt(km3/yr) of outflow is cut through or silted up.
+  sillIncisionM: 30
 };
+
+/**
+ * Whether ice sheets covered the cell at the last glacial maximum. Data may supply
+ * `cell.glaciatedLGM`; otherwise ground cold and snowy enough today stands in for it.
+ */
+function wasIceScoured(cell) {
+  if (typeof cell.glaciatedLGM === 'boolean') return cell.glaciatedLGM;
+  if (Math.abs(cell.lat) < 40 || !cell.tempMonthlyC) return false;
+  return (cell.tempC ?? 99) <= 6 && (cell.precip ?? 0) >= 450 && Math.max(...cell.tempMonthlyC) <= 20;
+}
 
 /** Undirected, de-duplicated 8-neighbourhood derived from the 4-neighbour cube-sphere table. */
 function buildD8Neighbors(neighborTable) {
@@ -244,6 +257,54 @@ function rerouteToSink(dep, sinkCells, graph, receiver) {
 }
 
 /**
+ * Route a lakeless depression downhill to its floor and from there along its lowest path out
+ * over the sill, instead of across the flood-filled flat in straight lines towards the exit.
+ */
+function rerouteThroughFloor(dep, graph, receiver) {
+  const { elevation, adj } = graph;
+  const outlet = receiver[dep.exit];
+  rerouteToSink(dep, [dep.floor], graph, receiver);
+  const inDep = new Set(dep.cells);
+  const pass = new Map([[dep.exit, elevation[dep.exit]]]);
+  const toward = new Map();
+  const heap = new MinHeap();
+  heap.push(pass.get(dep.exit), dep.exit);
+  while (heap.size) {
+    const c = heap.pop();
+    if (c === dep.floor) break;
+    for (const nb of adj[c]) {
+      if (!inDep.has(nb) || pass.has(nb)) continue;
+      pass.set(nb, Math.max(elevation[nb], pass.get(c)));
+      toward.set(nb, c);
+      heap.push(pass.get(nb), nb);
+    }
+  }
+  for (let c = dep.floor; c !== dep.exit && toward.has(c); c = toward.get(c)) receiver[c] = toward.get(c);
+  receiver[dep.exit] = outlet;
+}
+
+/** Re-accumulate flux and area inside `cells` after their receivers changed; outside inputs stay. */
+function reaccumulate(cells, receiver, flux, drainArea, extFlux, extArea) {
+  const inSet = new Set(cells);
+  const pending = new Map(cells.map((c) => [c, 0]));
+  for (const c of cells) {
+    flux[c] = extFlux[c];
+    drainArea[c] = extArea[c];
+    if (inSet.has(receiver[c])) pending.set(receiver[c], pending.get(receiver[c]) + 1);
+  }
+  const queue = cells.filter((c) => pending.get(c) === 0);
+  for (let h = 0; h < queue.length; h++) {
+    const c = queue[h];
+    const r = receiver[c];
+    if (!inSet.has(r)) continue;
+    flux[r] += flux[c];
+    drainArea[r] += drainArea[c];
+    pending.set(r, pending.get(r) - 1);
+    if (pending.get(r) === 0) queue.push(r);
+  }
+}
+
+/**
  * Open-water evaporation (mm/yr): the climate stage's Priestley-Taylor potential
  * evaporation, or a temperature fit to observed lake evaporation when it is absent.
  */
@@ -328,9 +389,11 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
     const i = flood.order[k];
     const dep = exitOf.get(i);
     let blocked = false;
-    if (dep && dep.significant) {
-      const inflow = flux[i];
-      const fullLoss = dep.cells.reduce((s, c) => s + netLossKm3[c], 0);
+    const inflow = dep ? flux[i] : 0;
+    const fullLoss = dep ? dep.cells.reduce((s, c) => s + netLossKm3[c], 0) : 0;
+    const incised = dep && inflow > fullLoss && !wasIceScoured(cellList[dep.floor])
+      && dep.depthM < opts.sillIncisionM * Math.sqrt(inflow - fullLoss);
+    if (dep && dep.significant && !incised) {
       let lakeCells;
       let open;
       let evaporated;
@@ -390,6 +453,9 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
           belowSeaLevel: elevation[dep.floor] < planet.seaLevelM
         });
       }
+    } else if (dep && dep.cells.length > 1) {
+      rerouteThroughFloor(dep, graph, receiver);
+      reaccumulate(dep.cells, receiver, flux, drainArea, extFlux, extArea);
     }
 
     const r = receiver[i];
@@ -684,4 +750,4 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
   };
 }
 
-module.exports = { DEFAULTS, buildD8Neighbors, priorityFlood, runDrainage, defaultLakeEvaporationMm };
+module.exports = { DEFAULTS, buildD8Neighbors, priorityFlood, runDrainage, defaultLakeEvaporationMm, wasIceScoured };

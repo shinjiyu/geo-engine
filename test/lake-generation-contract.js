@@ -20,7 +20,8 @@ function profile(runoffMm) {
   return { cells, neighbors };
 }
 const planet = normalizePlanet({ seaLevelM: 900 });
-const options = { minRiverAreaKm2: 1, minRiverLengthKm: 0, minLakeAreaKm2: 1000 };
+// Six continent-sized cells carry enough water to saw through any sill, so incision is off here.
+const options = { minRiverAreaKm2: 1, minRiverLengthKm: 0, minLakeAreaKm2: 1000, sillIncisionM: 0 };
 
 const wet = profile(500);
 const wetResult = runDrainage(wet.cells, wet.neighbors, planet, options);
@@ -40,6 +41,16 @@ assert.equal(outflow.mouth.type, 'ocean');
 assert.deepEqual(outflow.cells, ['B', 'A']);
 assert.ok(wetResult.rivers.every((r) => r.cells.every((k) => !wet.cells.get(k).isLake)),
   'river paths must not run through lake cells');
+
+const incised = profile(500);
+const incisedResult = runDrainage(incised.cells, incised.neighbors, planet, { ...options, sillIncisionM: 30 });
+assert.equal(incisedResult.lakes.length, 0, 'a strong overflow cuts through a shallow sill');
+assert.equal(incised.cells.get('C').isLand, true);
+assert.ok(incisedResult.rivers.some((r) => r.mouth.type === 'ocean' && r.cells.includes('C') && r.cells.includes('E')),
+  'the river runs on through the cut basin to the sea');
+incised.cells.get('C').glaciatedLGM = true;
+const scoured = runDrainage(incised.cells, incised.neighbors, planet, { ...options, sillIncisionM: 30 });
+assert.equal(scoured.lakes.length, 1, 'freshly ice-scoured basins keep their lakes');
 
 const dry = profile(10);
 const dryResult = runDrainage(dry.cells, dry.neighbors, planet, options);
