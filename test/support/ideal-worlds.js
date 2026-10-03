@@ -36,6 +36,17 @@ const CONTINENT_TARGETS = [
   [-45, 'W', ['C'], [800, 3500]]
 ];
 
+// [lat, side, coldest-month mean range C]: Brest/Vancouver, Kyiv/Saratov, Harbin/Quebec, Bergen,
+// Moscow/Perm, Lisbon/Los Angeles, Shanghai/Atlanta, the equator, sub-Arctic interior.
+const CONTINENT_TEMP_TARGETS = [
+  [2, 'C', [22, 29]],
+  [35, 'W', [8, 15]], [35, 'E', [0, 10]],
+  [48, 'W', [2, 10]], [48, 'C', [-15, -3]], [48, 'E', [-20, -5]],
+  [58, 'W', [-3, 6]], [58, 'C', [-22, -8]],
+  [67, 'C', [-38, -15]],
+  [-35, 'W', [8, 15]], [-45, 'W', [3, 10]]
+];
+
 function targetLon(lat, side) {
   const hw = continentHalfWidth(lat);
   return side === 'W' ? -hw + 3 : side === 'E' ? hw - 3 : 0;
@@ -60,6 +71,22 @@ function scoreContinent(sample) {
     results.push({ lat, side, lon, precip: Math.round(precip), koppen, expected: classes.join('|'), range: [lo, hi], hit });
   }
   return { results, hits, total: CONTINENT_TARGETS.length, loss: loss / CONTINENT_TARGETS.length };
+}
+
+/** Coldest-month temperature targets. `sampleTmin(lat, lon)` -> coldest monthly mean (C). */
+function scoreContinentTemp(sampleTmin) {
+  const results = [];
+  let loss = 0;
+  let hits = 0;
+  for (const [lat, side, [lo, hi]] of CONTINENT_TEMP_TARGETS) {
+    const lon = targetLon(lat, side);
+    const tmin = sampleTmin(lat, lon);
+    const err = Math.max(0, lo - tmin, tmin - hi);
+    loss += err;
+    if (err === 0) hits++;
+    results.push({ lat, side, lon, tmin: Math.round(tmin * 10) / 10, range: [lo, hi], hit: err === 0 });
+  }
+  return { results, hits, total: CONTINENT_TEMP_TARGETS.length, loss: loss / CONTINENT_TEMP_TARGETS.length };
 }
 
 /** Cube-sphere cells for an idealized world (same path as the Earth heightmap cells). */
@@ -92,4 +119,7 @@ function idealSurface(name, grid) {
   return { landFraction, heightM };
 }
 
-module.exports = { WORLDS, CONTINENT_TARGETS, continentHalfWidth, scoreContinent, buildIdealCells, cellAt, idealSurface };
+module.exports = {
+  WORLDS, CONTINENT_TARGETS, CONTINENT_TEMP_TARGETS, continentHalfWidth,
+  scoreContinent, scoreContinentTemp, buildIdealCells, cellAt, idealSurface
+};

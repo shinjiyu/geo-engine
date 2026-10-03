@@ -15,7 +15,7 @@
 const { LatLonGrid, simulateAtmosphere, DEFAULT_PARAMS } = require('../src/generate/atmosphere');
 const { normalizePlanet } = require('../src/planet/params');
 const { loadEarthHeightSampler, loadEarthClimatology, isIceSheet } = require('../test/support/earth-reference');
-const { idealSurface, scoreContinent } = require('../test/support/ideal-worlds');
+const { idealSurface, scoreContinent, scoreContinentTemp } = require('../test/support/ideal-worlds');
 const { koppenClass } = require('../src/generate/climate-stage');
 
 const planet = normalizePlanet({});
@@ -42,7 +42,8 @@ for (let i = 0; i < grid.nLat; i++) {
 }
 
 function temperatureScore(params) {
-  const r = simulateAtmosphere(grid, surface, planet, { ...params, temperatureOnly: true });
+  // Full water cycle: dry-surface warming depends on evaporation.
+  const r = simulateAtmosphere(grid, surface, planet, { spinupDays: 60, ...params });
   const lapse = planet.lapseRateC / 1000;
   const acc = { land: [0, 0, 0], ocean: [0, 0, 0], amp: [0, 0] };
   for (let c = 0; c < grid.size; c++) {
@@ -72,6 +73,18 @@ function temperatureScore(params) {
     ampRmse: Math.sqrt(acc.amp[0] / acc.amp[1])
   };
   out.loss = 0.5 * out.landRmse + 0.5 * out.oceanRmse + 0.3 * out.ampRmse + 0.3 * Math.abs(out.landBias);
+  if (IDEAL_WEIGHT > 0) {
+    const ri = simulateAtmosphere(idealGrid, idealLand, planet, { spinupDays: 60, ...params });
+    const ideal = scoreContinentTemp((lat, lon) => {
+      const c = idealGrid.index(lat, lon);
+      let tmin = Infinity;
+      for (let m = 0; m < 12; m++) tmin = Math.min(tmin, ri.monthTempSeaLevel[m * idealGrid.size + c] - lapse * idealLand.heightM[c]);
+      return tmin;
+    });
+    out.idealHits = ideal.hits;
+    out.idealLoss = ideal.loss;
+    out.loss += 0.1 * IDEAL_WEIGHT * ideal.loss;
+  }
   return out;
 }
 
@@ -179,6 +192,7 @@ const SPACES = {
       gyreDescent: [0, 8],
       gyreInlandKm: [300, 3000],
       thermalWind: [0, 3],
+      coldLandHighGain: [0.2, 1],
       itczShiftFactor: [0.2, 1.5],
       monsoonLandGain: [0, 5],
       plateauItczGain: [0, 6],
@@ -204,14 +218,20 @@ const SPACES = {
     score: temperatureScore,
     keys: {
       diffusion: [0.2, 2],
+      oceanDiffusion: [0, 1.5],
       heatCapLand: [50, 1500],
       heatCapOcean: [600, 4000],
       heatCapIce: [30, 600],
       marineRecoverDays: [0.3, 10],
+      sstAirRecoverDays: [0.2, 5],
+      sstWinterGain: [0, 3],
       landOceanExchange: [0, 20],
       albedo0: [0.2, 0.4],
       albedo2: [0, 0.3],
       marineDecayDays: [0.5, 15],
+      sstGyreSubtropical: [0, 8],
+      sstGyreSubpolar: [0, 12],
+      dryWarmingC: [0, 8],
       olrA: [190, 215]
     }
   }

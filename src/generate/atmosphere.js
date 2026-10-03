@@ -28,20 +28,24 @@ const DEFAULT_PARAMS = {
   olrA: 206.2,
   olrB: 2.09,
   diffusion: 0.59,
-  heatCapOcean: 4000,
-  heatCapLand: 116,
-  heatCapIce: 78,
+  heatCapOcean: 2725,
+  heatCapLand: 50,
+  heatCapIce: 398.625,
   landOceanExchange: 6.9,
+  oceanDiffusion: 0.15,
+  oceanBasinLandFrac: 0.1,
+  sstAirRecoverDays: 1.3,
+  sstWinterGain: 1,
   albedo0: 0.3,
-  albedo2: 0.11,
+  albedo2: 0.0912,
   albedoIce: 0.62,
   // circulation
   hadleyEdgeDeg: 30,
   polarFrontDeg: 65,
   itczShiftFactor: 1.287,
-  monsoonLandGain: 4.6875,
+  monsoonLandGain: 3.4375,
   plateauHeightM: 2500,
-  plateauItczGain: 6,
+  plateauItczGain: 4.5,
   ascentBlurDeg: 3.125,
   tradeU: 7,
   tradeV: 1.726,
@@ -49,18 +53,19 @@ const DEFAULT_PARAMS = {
   westerlyV: 2.172,
   polarU: 3,
   polarV: 1,
-  gyreWind: 3,
+  gyreWind: 4,
   gyreAscent: 5.625,
   gyreDescent: 0,
   gyreAscentOcean: 0,
   gyreLandBlurDeg: 4,
-  gyreInlandKm: 3000,
-  sstGyreSubtropical: 3,
-  sstGyreSubpolar: 4,
+  gyreInlandKm: 2325,
+  sstGyreSubtropical: 1.5,
+  sstGyreSubpolar: 3.25,
   thermalWind: 0.32,
   thermalGeoWind: 2.453,
-  marineDecayDays: 1.24,
-  marineRecoverDays: 2.1,
+  coldLandHighGain: 1,
+  marineDecayDays: 2.1463,
+  marineRecoverDays: 2.7062,
   // moisture
   wsatRef: 70,
   wsatRefTempC: 27,
@@ -70,23 +75,23 @@ const DEFAULT_PARAMS = {
   wtgLatDeg: 81.8625,
   oceanEvapCoef: 0.02,
   convergenceFactor: 0.461,
-  convTropicsDeg: 15.65,
+  convTropicsDeg: 25.025,
   extratropLandConv: 0.1875,
-  rhBase: 0.7097,
-  rhAscent: 0.2328,
-  rhSubsidence: 0.0125,
+  rhBase: 0.666,
+  rhAscent: 0.35,
+  rhSubsidence: 0,
   rhMin: 0.45,
   rhMax: 0.98,
   condenseTauDays: 0.25,
   frontalRate: 4,
   frontalRhTrue: 1,
   frontalRhExp: 2,
-  ascentZonalTerm: 0.25,
+  ascentZonalTerm: 0.125,
   frontalContinentality: 0,
   leeFetchKm: 600,
   leeFrontalScaleM: 3000,
-  leeFrontalThresholdM: 800,
-  polarFrontalShare: 0.2545,
+  leeFrontalThresholdM: 700,
+  polarFrontalShare: 0.5045,
   orographicEfficiency: 0.05,
   orographicScaleM: 1187.5,
   leeDryingThresholdM: 487,
@@ -197,10 +202,26 @@ function runEnergyBalance(rowLat, landFraction, planet, p) {
       }
       const tmNew = solveTridiagonal(a, b, c, rhs, nLat);
       for (let i = 0; i < nLat; i++) {
-        const fl = landFraction[i];
         const heat = (tmNew[i] - rhs[i]) * Cm[i];
         To[i] += heat / Co[i];
         Tl[i] += heat / p.heatCapLand;
+      }
+      if (p.oceanDiffusion > 0) {
+        // Wind-driven and overturning ocean transport needs sea in both bands and coasts to bound
+        // the gyres: a circumpolar channel carries no net meridional heat.
+        const width = (i) => (1 - landFraction[i]) * smoothstep(0, p.oceanBasinLandFrac, landFraction[i]);
+        for (let i = 0; i < nLat; i++) {
+          const wo = Math.max(0.05, 1 - landFraction[i]);
+          const k = p.oceanDiffusion / (Co[i] * wo * cosC[i] * dPhi * dPhi);
+          const wS = i > 0 ? Math.min(width(i - 1), width(i)) : 0;
+          const wN = i < nLat - 1 ? Math.min(width(i), width(i + 1)) : 0;
+          a[i] = -k * cosEdge[i] * wS;
+          c[i] = -k * cosEdge[i + 1] * wN;
+          b[i] = 1 - a[i] - c[i];
+        }
+        To.set(solveTridiagonal(a, b, c, To, nLat));
+      }
+      for (let i = 0; i < nLat; i++) {
         if (y === totalYears - 1) {
           ocean[d * nLat + i] = To[i];
           land[d * nLat + i] = Tl[i];
@@ -365,6 +386,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   // basin along each latitude row (cos(pi*x) is +1 at the western edge, -1 at the eastern edge).
   const gyreShape = new Float64Array(size);
   const sstAnomaly = new Float64Array(size);
+  const sstSubpolar = new Float64Array(size);
   for (let i = 0; i < nLat; i++) {
     const row = i * nLon;
     let anyLand = false;
@@ -384,6 +406,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
       const shape = Math.cos(Math.PI * (dw - 0.5) / (dw + de - 1)) * smoothstep(500, 3000, width);
       gyreShape[row + j] = shape;
       sstAnomaly[row + j] = shape * (p.sstGyreSubtropical * subtropical - p.sstGyreSubpolar * subpolar);
+      // Only the warm eastern drift: the cold western side comes from continental outflow air.
+      sstSubpolar[row + j] = Math.max(0, -shape) * p.sstGyreSubpolar * subpolar;
     }
     // The highs' flanks reach inland: moist return flow over east coasts, dry subsiding flow
     // over west coasts, fading with distance from the nearest coast on each side.
@@ -540,7 +564,12 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
       let mean = 0;
       for (let j = 0; j < nLon; j++) mean += tsl[i * nLon + j];
       mean /= nLon;
-      for (let j = 0; j < nLon; j++) anomaly[i * nLon + j] = tsl[i * nLon + j] - mean;
+      for (let j = 0; j < nLon; j++) {
+        const c = i * nLon + j;
+        const a = tsl[c] - mean;
+        // Winter continental highs are shallow: the oceanic lows rule the storm-track surface flow.
+        anomaly[c] = isLand[c] && a < 0 ? a * p.coldLandHighGain : a;
+      }
     }
     const smooth = blurField(grid, anomaly, 8, 2);
     for (let i = 0; i < nLat; i++) {
@@ -644,6 +673,15 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     }
     const decay = Math.exp(-1 / (p.stepsPerDay * p.marineDecayDays));
     const recover = Math.exp(-1 / (p.stepsPerDay * p.marineRecoverDays));
+    // Surface air takes on the local sea temperature within about a day.
+    const recoverA = Math.exp(-1 / (p.stepsPerDay * p.sstAirRecoverDays));
+    // Subpolar gyres release most of their heat in winter, when land air is far colder than the sea.
+    const dayM = Math.floor((m + 0.5) * DAYS / 12);
+    const winterGain = new Float64Array(nLat);
+    for (let i = 0; i < nLat; i++) {
+      const contrast = ebm.ocean[dayM * nLat + i] - ebm.land[dayM * nLat + i];
+      winterGain[i] = p.sstWinterGain * Math.max(0, contrast) / 10;
+    }
     const next = new Float64Array(size);
     const nextAnomaly = new Float64Array(size);
     const iterations = (marineCache.some(Boolean) ? 12 : 30) * p.stepsPerDay;
@@ -659,7 +697,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           nextAnomaly[c] = upA * decay;
         } else {
           next[c] = 1 - (1 - up) * recover;
-          nextAnomaly[c] = sstAnomaly[c] - (sstAnomaly[c] - upA) * recover;
+          const target = sstAnomaly[c] + sstSubpolar[c] * winterGain[rowOf[c]];
+          nextAnomaly[c] = target - (target - upA) * recoverA;
         }
       }
       marine.set(next);
@@ -884,6 +923,10 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
     }
   }
 
+  if (diag) {
+    diag.sstAnomaly = sstAnomaly;
+    diag.ebm = ebm;
+  }
   return {
     grid,
     isLand,
