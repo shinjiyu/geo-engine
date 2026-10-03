@@ -7,7 +7,12 @@ const {
   faceUVToVector
 } = require('../topology/cube-sphere');
 const { latLonToVector } = require('./lat-lon');
-const { pixelToLatLonEquirect, pixelToLatLonMercator } = require('./projections');
+const {
+  pixelToLatLonEquirect,
+  pixelToLatLonMercator,
+  latLonToEquirectPixel,
+  latLonToMercatorPixel
+} = require('./projections');
 const { sampleTerrainAtUnitVector } = require('../generate/terrain');
 const { makeNoise3D, fbm } = require('../generate/noise');
 const {
@@ -47,7 +52,7 @@ function colorFromContinuousTerrain(seed, x, y, z, layer, options) {
   return TERRAIN_COLORS[sample.terrain] || TERRAIN_COLORS.plain;
 }
 
-function colorForCell(cell, layer, world, realmMap) {
+function colorForCell(cell, layer, world, realmMap, paintRivers = true) {
   if (!cell) return [0, 0, 0, 255];
 
   let rgba;
@@ -70,7 +75,7 @@ function colorForCell(cell, layer, world, realmMap) {
       rgba = TERRAIN_COLORS[cell.terrain] || TERRAIN_COLORS.plain;
   }
 
-  return riverOverlay(rgba, cell.river && cell.isLand && !cell.isLake);
+  return riverOverlay(rgba, paintRivers && cell.river && cell.isLand && !cell.isLake);
 }
 
 function writePixel(buf, width, px, py, rgba) {
@@ -81,7 +86,7 @@ function writePixel(buf, width, px, py, rgba) {
   buf[i + 3] = rgba[3];
 }
 
-function buildLatLonRaster(world, options, pixelToLatLonFn, projection) {
+function buildLatLonRaster(world, options, pixelToLatLonFn, projection, latLonToPixelFn) {
   const width = Math.min(2048, Math.max(64, Number(options.width) || 1024));
   const defaultHeight = projection === 'web-mercator' ? width : Math.floor(width / 2);
   const height = Math.min(2048, Math.max(32, Number(options.height) || defaultHeight));
@@ -104,23 +109,64 @@ function buildLatLonRaster(world, options, pixelToLatLonFn, projection) {
         rgba = colorFromContinuousTerrain(world.seed, vec.x, vec.y, vec.z, layer, pOpts);
       } else {
         const cell = lookupCell(cells, n, vec.x, vec.y, vec.z);
-        rgba = colorForCell(cell, layer, world, realmMap);
+        rgba = colorForCell(cell, layer, world, realmMap, false);
       }
 
       writePixel(buf, width, px, py, rgba);
     }
   }
+  drawWorldWaterways(buf, world, width, height, latLonToPixelFn);
 
   return { width, height, layer, projection, rgba: buf.toString('base64') };
 }
 
+const RIVER_COLOR = [41, 126, 190, 255];
+const WADI_COLOR = [92, 122, 150, 255];
+
+/** Rivers as centre-lines widening with discharge; intermittent channels as faint dashes. */
+function drawWorldWaterways(buf, world, width, height, latLonToPixelFn) {
+  const cells = world.cells;
+  const scale = Math.sqrt(width / 1024);
+  const toPixel = (key) => {
+    const c = cells[key];
+    if (!c) return null;
+    const { px, py } = latLonToPixelFn(c.lat, c.lon, width, height);
+    return { x: px, y: py };
+  };
+  const strokePath = (path, style) => {
+    let phase = 0;
+    let prev = toPixel(path[0]);
+    for (let m = 1; m < path.length; m++) {
+      const next = toPixel(path[m]);
+      if (!prev || !next) {
+        prev = next;
+        continue;
+      }
+      if (Math.abs(next.x - prev.x) > width / 2) {
+        prev = next;
+        continue;
+      }
+      if (style === 'wadi') {
+        phase = drawDashedLine(buf, width, height, prev, next, 0.45, WADI_COLOR, phase, 3 * scale, 3 * scale);
+      } else {
+        const flow = Math.max(cells[path[m - 1]]?.flow || 0, 1);
+        const radius = Math.min(1.7, 0.45 + 0.3 * Math.log10(flow)) * scale;
+        drawLine(buf, width, height, prev, next, radius, RIVER_COLOR);
+      }
+      prev = next;
+    }
+  };
+  for (const wadi of world.wadis || []) strokePath(wadi.cells, 'wadi');
+  for (const river of world.rivers || []) strokePath(river.cells, 'river');
+}
+
 function buildEquirectRaster(world, options) {
-  return buildLatLonRaster(world, options, pixelToLatLonEquirect, 'equirectangular');
+  return buildLatLonRaster(world, options, pixelToLatLonEquirect, 'equirectangular', latLonToEquirectPixel);
 }
 
 function buildMercatorRaster(world, options) {
   const opts = { width: 2048, height: 2048, ...options };
-  return buildLatLonRaster(world, opts, pixelToLatLonMercator, 'web-mercator');
+  return buildLatLonRaster(world, opts, pixelToLatLonMercator, 'web-mercator', latLonToMercatorPixel);
 }
 
 /** Flat regional map (linear lat/lon), north-up — easier to read than full globe. */
@@ -247,6 +293,27 @@ function drawLine(buf, width, height, from, to, radius, rgba, drawableMask) {
   }
 }
 
+/** Returns the dash phase at `to`, so consecutive segments continue one pattern. */
+function drawDashedLine(buf, width, height, from, to, radius, rgba, phase, on, off, drawableMask) {
+  const distance = Math.hypot(to.x - from.x, to.y - from.y);
+  const steps = Math.min(2000, Math.max(1, Math.ceil(distance * 1.4)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    if ((phase + t * distance) % (on + off) >= on) continue;
+    drawDisc(
+      buf,
+      width,
+      height,
+      from.x + (to.x - from.x) * t,
+      from.y + (to.y - from.y) * t,
+      radius,
+      rgba,
+      drawableMask
+    );
+  }
+  return (phase + distance) % (on + off);
+}
+
 class ElevationHeap {
   constructor(priority) {
     this.priority = priority;
@@ -293,12 +360,17 @@ class ElevationHeap {
   }
 }
 
-function drawLocalHydrology(buf, elevation, drawableMask, width, height) {
+/**
+ * Local drainage on the sheet's relief. Discharge accumulates the runoff of each pixel plus the
+ * world rivers' inflow at the sheet edge, so dry country grows wadis rather than rivers.
+ */
+function drawLocalHydrology(buf, elevation, drawableMask, width, height, water) {
   const count = width * height;
   const downslope = new Int32Array(count).fill(-1);
   const filled = new Float32Array(elevation);
   const visited = new Uint8Array(count);
   const flow = new Float32Array(count);
+  const area = new Float32Array(count);
   const landIndices = [];
   const neighborOffsets = [
     [-1, -1], [0, -1], [1, -1],
@@ -312,9 +384,10 @@ function drawLocalHydrology(buf, elevation, drawableMask, width, height) {
       const index = y * width + x;
       if (!drawableMask[index]) continue;
       landIndices.push(index);
-      flow[index] = 1;
+      flow[index] = water.ownKm3[index] + water.injectKm3[index];
+      area[index] = water.pixelKm2 + water.injectAreaKm2[index];
       let outlet = -1;
-      let isOutlet = x === 0 || y === 0 || x === width - 1 || y === height - 1;
+      let isOutlet = (x === 0 || y === 0 || x === width - 1 || y === height - 1) && !water.inflowEdge[index];
       for (const [dx, dy] of neighborOffsets) {
         const nx = x + dx;
         const ny = y + dy;
@@ -355,18 +428,32 @@ function drawLocalHydrology(buf, elevation, drawableMask, width, height) {
   landIndices.sort((a, b) => filled[b] - filled[a]);
   for (const index of landIndices) {
     const target = downslope[index];
-    if (target >= 0) flow[target] += flow[index];
+    if (target >= 0) {
+      flow[target] += flow[index];
+      area[target] += area[index];
+    }
   }
 
-  const minFlow = Math.max(800, landIndices.length * 0.04);
-  const color = [41, 126, 190, 255];
+  // Coarser sheets show only the larger channels.
+  const channelAreaKm2 = Math.max(20000, 2500 * water.pixelKm2);
+  const perennialKm3 = 0.5;
+  // Only detailed sheets widen the great rivers beyond a one-pixel line.
+  const maxRadius = water.pixelKm2 < 4 ? 0.85 : 0.7;
+  const drawn = (index) => area[index] >= channelAreaKm2;
+  const perennial = (index) => drawn(index) && flow[index] >= perennialKm3;
   let invalidInlandTermini = 0;
   let visibleOutletCount = 0;
-  for (const index of landIndices) {
+  let riverPixelCount = 0;
+  let wadiPixelCount = 0;
+  const wadiPhase = new Float32Array(count);
+  for (let k = 0; k < landIndices.length; k++) {
+    const index = landIndices[k];
+    if (!drawn(index)) continue;
     const target = downslope[index];
     const x = index % width;
     const y = Math.floor(index / width);
-    if (flow[index] < minFlow) continue;
+    if (perennial(index)) riverPixelCount++;
+    else wadiPixelCount++;
     if (target < 0) {
       if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
         visibleOutletCount++;
@@ -377,25 +464,25 @@ function drawLocalHydrology(buf, elevation, drawableMask, width, height) {
     }
     const tx = target % width;
     const ty = Math.floor(target / width);
-    const radius = Math.min(0.78, 0.38 + Math.log2(flow[index] / minFlow + 1) * 0.1);
-    drawLine(
-      buf,
-      width,
-      height,
-      { x, y },
-      { x: tx, y: ty },
-      radius,
-      color,
-      drawableMask
-    );
+    if (perennial(index)) {
+      const radius = Math.min(maxRadius, 0.38 + 0.15 * Math.log10(1 + flow[index] / perennialKm3));
+      drawLine(buf, width, height, { x, y }, { x: tx, y: ty }, radius, RIVER_COLOR, drawableMask);
+    } else {
+      const step = Math.hypot(tx - x, ty - y);
+      if (wadiPhase[index] % 7 < 4) {
+        drawLine(buf, width, height, { x, y }, { x: tx, y: ty }, 0.38, WADI_COLOR, drawableMask);
+      }
+      wadiPhase[target] = Math.max(wadiPhase[target], wadiPhase[index] + step);
+    }
     if (!drawableMask[target]) {
       visibleOutletCount++;
-    } else if (flow[target] < minFlow) {
+    } else if (!drawn(target)) {
       invalidInlandTermini++;
     }
   }
   return {
-    riverPixelCount: landIndices.filter((index) => flow[index] >= minFlow).length,
+    riverPixelCount,
+    wadiPixelCount,
     invalidInlandTermini,
     visibleOutletCount
   };
@@ -418,15 +505,18 @@ function interpolatedCellFields(world, vec) {
   ];
   let elevation = 0;
   let magicFlux = 0;
+  let runoff = 0;
   for (const [u, v, weight] of corners) {
     const corner = faceUVToVector(face, u, v, n);
     const cell = lookupCell(world.cells, n, corner.x, corner.y, corner.z);
     elevation += (cell?.elevation || 0) * weight;
     magicFlux += (cell?.magicFlux || 0) * weight;
+    runoff += Math.max(0, cell?.runoff || 0) * weight;
   }
   return {
     elevation,
     magicFlux,
+    runoff,
     nearest: lookupCell(world.cells, n, vec.x, vec.y, vec.z)
   };
 }
@@ -469,6 +559,7 @@ function buildRegionRaster(world, options) {
   const magic = new Float32Array(width * height);
   const lake = new Uint8Array(width * height);
   const riverLand = new Uint8Array(width * height);
+  const runoffMm = new Float32Array(width * height);
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
@@ -491,6 +582,7 @@ function buildRegionRaster(world, options) {
       const index = py * width + px;
       elevation[index] = fields.elevation + detail * amplitude;
       magic[index] = fields.magicFlux;
+      runoffMm[index] = fields.runoff;
       lake[index] = fields.nearest?.isLake ? 1 : 0;
       riverLand[index] = !fields.nearest?.isLake && elevation[index] > seaLevelM ? 1 : 0;
     }
@@ -544,7 +636,13 @@ function buildRegionRaster(world, options) {
       writePixel(buf, width, px, py, rgba);
     }
   }
-  const hydrology = drawLocalHydrology(buf, elevation, riverLand, width, height);
+  const kmPerPixel = world.meta.radiusKm * span * Math.PI / 180 / width;
+  const pixelKm2 = kmPerPixel * kmPerPixel;
+  const ownKm3 = Float32Array.from(runoffMm, (mm) => mm * 1e-6 * pixelKm2);
+  const inflow = worldChannelInflow(world, elevation, riverLand, width, height, centerLat, centerLon, span);
+  const hydrology = drawLocalHydrology(buf, elevation, riverLand, width, height, {
+    ownKm3, pixelKm2, ...inflow
+  });
 
   return {
     width,
@@ -555,13 +653,127 @@ function buildRegionRaster(world, options) {
     centerLon,
     span,
     riverPixelCount: hydrology.riverPixelCount,
+    wadiPixelCount: hydrology.wadiPixelCount,
     invalidRiverTermini: hydrology.invalidInlandTermini,
     visibleRiverOutlets: hydrology.visibleOutletCount,
-    scaleKmPerPixel: Math.round(
-      (world.meta.radiusKm * span * Math.PI / 180 / width) * 100
-    ) / 100,
+    scaleKmPerPixel: Math.round(kmPerPixel * 100) / 100,
     rgba: buf.toString('base64')
   };
+}
+
+function azimuthalPixel(lat, lon, width, height, centerLat, centerLon, spanDeg) {
+  const phi = lat * Math.PI / 180;
+  const phi0 = centerLat * Math.PI / 180;
+  const dLon = (lon - centerLon) * Math.PI / 180;
+  const cosC = Math.sin(phi0) * Math.sin(phi) + Math.cos(phi0) * Math.cos(phi) * Math.cos(dLon);
+  const c = Math.acos(Math.max(-1, Math.min(1, cosC)));
+  if (c > Math.PI / 2) return null;
+  const k = c < 1e-9 ? 1 : c / Math.sin(c);
+  const x = k * Math.cos(phi) * Math.sin(dLon);
+  const y = k * (Math.cos(phi0) * Math.sin(phi) - Math.sin(phi0) * Math.cos(phi) * Math.cos(dLon));
+  const spanRad = spanDeg * Math.PI / 180;
+  return {
+    x: (x / spanRad + 0.5) * width - 0.5,
+    y: (0.5 - y / (spanRad * height / width)) * height - 0.5
+  };
+}
+
+function hash01(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+  return ((h >>> 0) % 100000) / 100000;
+}
+
+/** Meandering course through `points`: recursive midpoint displacement, deterministic per tag. */
+function meanderPath(points, tag) {
+  let pts = points;
+  for (let level = 0; level < 4; level++) {
+    const next = [pts[0]];
+    for (let m = 1; m < pts.length; m++) {
+      const a = pts[m - 1];
+      const b = pts[m];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const offset = (hash01(`${tag}:${level}:${m}`) - 0.5) * 0.5;
+      next.push({ x: (a.x + b.x) / 2 - dy * offset, y: (a.y + b.y) / 2 + dx * offset }, b);
+    }
+    pts = next;
+  }
+  return pts;
+}
+
+/**
+ * Lowers a meandering trench along a world channel downstream of where it enters the sheet, so
+ * the inflow follows the world course instead of the nearest map edge; colours are already set.
+ */
+function carveChannel(elevation, mask, width, height, points, tag) {
+  const carveM = 250;
+  let level = Infinity;
+  let last = -1;
+  const path = meanderPath(points, tag);
+  for (let m = 1; m < path.length; m++) {
+    const a = path[m - 1];
+    const b = path[m];
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y))));
+    for (let s = 0; s <= steps; s++) {
+      const x = Math.round(a.x + (b.x - a.x) * s / steps);
+      const y = Math.round(a.y + (b.y - a.y) * s / steps);
+      if (x < 0 || y < 0 || x >= width || y >= height) continue;
+      const index = y * width + x;
+      if (!mask[index] || index === last) continue;
+      last = index;
+      level = Math.min(level, elevation[index]) - 0.01;
+      elevation[index] = level - carveM;
+    }
+  }
+}
+
+/**
+ * Upstream inflow of the world rivers and wadis that enter the sheet from outside, placed on the
+ * first visible land pixel of each entry and guided along the world course inside the sheet.
+ */
+function worldChannelInflow(world, elevation, mask, width, height, centerLat, centerLon, span) {
+  const injectKm3 = new Float32Array(width * height);
+  const injectAreaKm2 = new Float32Array(width * height);
+  // Edge pixels around an entry are not outlets, so the inflow runs into the sheet.
+  const inflowEdge = new Uint8Array(width * height);
+  const closeEdge = (x0, y0) => {
+    const r = 8;
+    for (let y = Math.max(0, y0 - r); y <= Math.min(height - 1, y0 + r); y++) {
+      for (let x = Math.max(0, x0 - r); x <= Math.min(width - 1, x0 + r); x++) {
+        if (x === 0 || y === 0 || x === width - 1 || y === height - 1) inflowEdge[y * width + x] = 1;
+      }
+    }
+  };
+  const inside = (p) => p && p.x >= 0 && p.y >= 0 && p.x <= width - 1 && p.y <= height - 1;
+  for (const channel of [...(world.wadis || []), ...(world.rivers || [])]) {
+    const pts = channel.cells.map((key) => {
+      const c = world.cells[key];
+      return c ? { p: azimuthalPixel(c.lat, c.lon, width, height, centerLat, centerLon, span), cell: c } : null;
+    });
+    for (let m = 1; m < pts.length; m++) {
+      const a = pts[m - 1];
+      const b = pts[m];
+      if (!a || !b || !a.p || !b.p || inside(a.p) || !inside(b.p)) continue;
+      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(b.p.x - a.p.x), Math.abs(b.p.y - a.p.y))));
+      for (let s = 0; s <= steps; s++) {
+        const x = Math.round(a.p.x + (b.p.x - a.p.x) * s / steps);
+        const y = Math.round(a.p.y + (b.p.y - a.p.y) * s / steps);
+        if (x < 0 || y < 0 || x >= width || y >= height || !mask[y * width + x]) continue;
+        injectKm3[y * width + x] += a.cell.flow || 0;
+        injectAreaKm2[y * width + x] += a.cell.drainageAreaKm2 || 0;
+        closeEdge(x, y);
+        const course = [{ x, y }];
+        for (let k = m; k < pts.length && pts[k]?.p; k++) {
+          course.push(pts[k].p);
+          if (!inside(pts[k].p)) break;
+        }
+        carveChannel(elevation, mask, width, height, course, `${channel.id}:${m}`);
+        break;
+      }
+    }
+  }
+  return { injectKm3, injectAreaKm2, inflowEdge };
 }
 
 function buildFaceRaster(world, face, options) {

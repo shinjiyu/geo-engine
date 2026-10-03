@@ -30,7 +30,7 @@ const { deriveWorldProfile } = require('./facts/derive-world-profile');
 const WORLDS_DIR = path.join(__dirname, '../worlds');
 const GEO_SCHEMA_VERSION = 1;
 const GEO_ENGINE_VERSION = '0.15.0';
-const GEO_PIPELINE_ID = 'orogen-seasonal-climate-drainage-v3';
+const GEO_PIPELINE_ID = 'orogen-seasonal-climate-drainage-v4';
 
 function configFingerprint(config) {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex')}`;
@@ -186,6 +186,7 @@ function createWorld(rawConfig) {
       riverCount: rivers.length,
       mainRiverCount: rivers.filter((r) => r.kind === 'main').length,
       tributaryCount: rivers.filter((r) => r.kind === 'tributary').length,
+      wadiCount: hydrology.wadis.length,
       lakeCount: surface.lakes.length,
       islandCount: surface.islands.length,
       landmassCount: surface.landmasses.length,
@@ -198,6 +199,7 @@ function createWorld(rawConfig) {
     },
     cells: Object.fromEntries(cells),
     rivers,
+    wadis: hydrology.wadis,
     lakes: surface.lakes,
     landmasses: surface.landmasses,
     islands: surface.islands,

@@ -6,7 +6,8 @@ const DEFAULTS = {
   minDepressionDepthM: 40,
   minLakeAreaKm2: 3000,
   minRiverAreaKm2: 25000,
-  minRiverDischargeKm3: 0.001,
+  // ~30 m3/s: below this a channel is dry for part of most years.
+  minRiverDischargeKm3: 1,
   minRiverLengthKm: 150
 };
 
@@ -401,50 +402,18 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
     }
   }
 
+  // Channels drain a large enough basin; perennial rivers also carry enough water to flow all
+  // year. Weaker channels are intermittent (wadis): dry beds that run only after rain.
+  const isChannel = new Uint8Array(count);
   const isRiver = new Uint8Array(count);
   for (let i = 0; i < count; i++) {
-    if (isOcean[i] || isLakeCell[i]) continue;
-    if (drainArea[i] >= opts.minRiverAreaKm2 && flux[i] >= opts.minRiverDischargeKm3) isRiver[i] = 1;
+    if (isOcean[i] || isLakeCell[i] || drainArea[i] < opts.minRiverAreaKm2) continue;
+    isChannel[i] = 1;
+    if (flux[i] >= opts.minRiverDischargeKm3) isRiver[i] = 1;
   }
-
-  const riverUp = new Map();
-  for (let i = 0; i < count; i++) {
-    if (!isRiver[i]) continue;
-    const r = receiver[i];
-    if (r >= 0 && isRiver[r]) {
-      if (!riverUp.has(r)) riverUp.set(r, []);
-      riverUp.get(r).push(i);
-    }
-  }
-
-  const pending = new Int32Array(count);
-  for (let i = 0; i < count; i++) if (isRiver[i]) pending[i] = (riverUp.get(i) || []).length;
-  const riverTopo = [];
-  for (let i = 0; i < count; i++) if (isRiver[i] && pending[i] === 0) riverTopo.push(i);
-  for (let h = 0; h < riverTopo.length; h++) {
-    const r = receiver[riverTopo[h]];
-    if (r >= 0 && isRiver[r] && --pending[r] === 0) riverTopo.push(r);
-  }
-
-  const strahler = new Int32Array(count);
-  for (const i of riverTopo) {
-    const ups = riverUp.get(i) || [];
-    if (!ups.length) {
-      strahler[i] = 1;
-      continue;
-    }
-    let best = 0;
-    let ties = 0;
-    for (const u of ups) {
-      if (strahler[u] > best) {
-        best = strahler[u];
-        ties = 1;
-      } else if (strahler[u] === best) {
-        ties++;
-      }
-    }
-    strahler[i] = ties >= 2 ? best + 1 : best;
-  }
+  // Ice sheets carry their meltwater under the ice, not in dry beds.
+  const iceCap = (c) => c.terrain === 'snow' || c.koppen === 'EF';
+  const isWadi = Uint8Array.from(isChannel, (v, i) => (v && !isRiver[i] && !iceCap(cellList[i]) ? 1 : 0));
 
   const cellDistanceKm = (a, b) => haversineKm(cellList[a].lat, cellList[a].lon, cellList[b].lat, cellList[b].lon);
   const pathLengthKm = (path) => {
@@ -456,52 +425,99 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
     flux[u] > flux[best] || (flux[u] === flux[best] && drainArea[u] > drainArea[best]) ? u : best
   ), ups[0]);
 
-  const raw = [];
-  const queue = [];
-  for (let i = 0; i < count; i++) {
-    if (!isRiver[i]) continue;
-    const r = receiver[i];
-    if (r >= 0 && isRiver[r]) continue;
-    let mouth;
-    if (r < 0) mouth = { type: 'sink' };
-    else if (isOcean[r]) mouth = { type: 'ocean' };
-    else if (isLakeCell[r]) mouth = { type: 'lake', lakeIndex: lakeIdOf[r] };
-    else mouth = { type: 'sink' };
-    queue.push({ start: i, parent: -1, junction: -1, mouth });
-  }
-  for (let head = 0; head < queue.length; head++) {
-    const item = queue[head];
-    const upstreamFirst = [];
-    let cur = item.start;
-    for (;;) {
-      upstreamFirst.push(cur);
-      const ups = riverUp.get(cur);
-      if (!ups || !ups.length) break;
-      const main = strongestUpstream(ups);
-      for (const u of ups) {
-        if (u !== main) queue.push({ start: u, parent: raw.length, junction: cur, mouth: null });
+  /** Main stems and tributaries of the channel network `mask`, with Strahler orders. */
+  function extractNetwork(mask) {
+    const up = new Map();
+    for (let i = 0; i < count; i++) {
+      if (!mask[i]) continue;
+      const r = receiver[i];
+      if (r >= 0 && mask[r]) {
+        if (!up.has(r)) up.set(r, []);
+        up.get(r).push(i);
       }
-      cur = main;
     }
-    const path = upstreamFirst.reverse();
-    if (item.junction >= 0) path.push(item.junction);
-    raw.push({
-      path,
-      parent: item.parent,
-      mouth: item.mouth || { type: 'confluence' },
-      mouthCell: item.start,
-      lengthKm: pathLengthKm(path)
-    });
+
+    const pending = new Int32Array(count);
+    for (let i = 0; i < count; i++) if (mask[i]) pending[i] = (up.get(i) || []).length;
+    const topo = [];
+    for (let i = 0; i < count; i++) if (mask[i] && pending[i] === 0) topo.push(i);
+    for (let h = 0; h < topo.length; h++) {
+      const r = receiver[topo[h]];
+      if (r >= 0 && mask[r] && --pending[r] === 0) topo.push(r);
+    }
+    const order = new Int32Array(count);
+    for (const i of topo) {
+      const ups = up.get(i) || [];
+      if (!ups.length) {
+        order[i] = 1;
+        continue;
+      }
+      let best = 0;
+      let ties = 0;
+      for (const u of ups) {
+        if (order[u] > best) {
+          best = order[u];
+          ties = 1;
+        } else if (order[u] === best) {
+          ties++;
+        }
+      }
+      order[i] = ties >= 2 ? best + 1 : best;
+    }
+
+    const raw = [];
+    const queue = [];
+    for (let i = 0; i < count; i++) {
+      if (!mask[i]) continue;
+      const r = receiver[i];
+      if (r >= 0 && mask[r]) continue;
+      let mouth;
+      let junction = -1;
+      if (r < 0) mouth = { type: 'sink' };
+      else if (isOcean[r]) mouth = { type: 'ocean' };
+      else if (isLakeCell[r]) mouth = { type: 'lake', lakeIndex: lakeIdOf[r] };
+      else if (isRiver[r]) {
+        mouth = { type: 'river', riverCell: r };
+        junction = r;
+      } else mouth = { type: 'sink' };
+      queue.push({ start: i, parent: -1, junction, mouth });
+    }
+    for (let head = 0; head < queue.length; head++) {
+      const item = queue[head];
+      const upstreamFirst = [];
+      let cur = item.start;
+      for (;;) {
+        upstreamFirst.push(cur);
+        const ups = up.get(cur);
+        if (!ups || !ups.length) break;
+        const main = strongestUpstream(ups);
+        for (const u of ups) {
+          if (u !== main) queue.push({ start: u, parent: raw.length, junction: cur, mouth: null });
+        }
+        cur = main;
+      }
+      const path = upstreamFirst.reverse();
+      if (item.junction >= 0) path.push(item.junction);
+      raw.push({
+        path,
+        parent: item.parent,
+        mouth: item.mouth || { type: 'confluence' },
+        mouthCell: item.start,
+        lengthKm: pathLengthKm(path)
+      });
+    }
+
+    const keep = raw.map((r) => r.lengthKm >= opts.minRiverLengthKm);
+    for (let m = 0; m < raw.length; m++) {
+      if (raw[m].parent >= 0 && !keep[raw[m].parent]) keep[m] = false;
+    }
+    return {
+      order,
+      kept: raw.map((r, m) => ({ ...r, rawIndex: m })).filter((r) => keep[r.rawIndex])
+    };
   }
 
-  const keep = raw.map((r) => r.lengthKm >= opts.minRiverLengthKm);
-  for (let m = 0; m < raw.length; m++) {
-    if (raw[m].parent >= 0 && !keep[raw[m].parent]) keep[m] = false;
-  }
-
-  const kept = raw
-    .map((r, m) => ({ ...r, rawIndex: m }))
-    .filter((r) => keep[r.rawIndex]);
+  const { order: strahler, kept } = extractNetwork(isRiver);
   const discharge = (r) => flux[r.mouthCell];
   kept.sort((a, b) => {
     const am = a.parent < 0 ? 0 : 1;
@@ -558,6 +574,37 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
     for (const k of own) riverOfCell.set(k, river.id);
   }
 
+  const wadiNet = extractNetwork(isWadi);
+  wadiNet.kept.sort((a, b) => (a.parent < 0 ? 0 : 1) - (b.parent < 0 ? 0 : 1) || discharge(b) - discharge(a));
+  const wadiIdOfRaw = new Map(wadiNet.kept.map((r, m) => [r.rawIndex, `wadi-${m + 1}`]));
+  const wadiCells = new Uint8Array(count);
+  const wadis = wadiNet.kept.map((r) => {
+    const own = r.parent >= 0 || r.mouth.type === 'river' ? r.path.slice(0, -1) : r.path;
+    for (const c of own) wadiCells[c] = 1;
+    const mouth = { ...r.mouth };
+    if (mouth.type === 'lake') {
+      mouth.lakeId = lakeIds[mouth.lakeIndex];
+      delete mouth.lakeIndex;
+    }
+    if (mouth.type === 'river') {
+      mouth.riverId = riverOfCell.get(keys[mouth.riverCell]) || null;
+      delete mouth.riverCell;
+    }
+    if (r.parent >= 0) mouth.wadiId = wadiIdOfRaw.get(r.parent);
+    return {
+      id: wadiIdOfRaw.get(r.rawIndex),
+      kind: r.parent < 0 ? 'main' : 'tributary',
+      parentId: r.parent >= 0 ? wadiIdOfRaw.get(r.parent) : null,
+      cells: r.path.map((c) => keys[c]),
+      lengthKm: Math.round(r.lengthKm),
+      order: wadiNet.order[r.mouthCell],
+      mouth,
+      dischargeKm3: Math.round(flux[r.mouthCell] * 1000) / 1000,
+      drainageAreaKm2: Math.round(drainArea[r.mouthCell]),
+      ...seasonalRegime(r.mouthCell, flux[r.mouthCell])
+    };
+  });
+
   const lakeRecords = lakes.map((lake, m) => {
     const id = lakeIds[m];
     const inflowRiverIds = rivers
@@ -589,12 +636,14 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
     if (isOcean[i]) {
       c.flow = 0;
       c.river = false;
+      c.wadi = false;
       continue;
     }
     c.flow = Math.round(flux[i] * 1000) / 1000;
     c.drainageAreaKm2 = Math.round(drainArea[i]);
     c.downslope = receiver[i] >= 0 ? keys[receiver[i]] : null;
     c.river = Boolean(riverCells[i]);
+    c.wadi = Boolean(wadiCells[i]);
     c.endorheic = false;
     if (isLakeCell[i]) {
       const lake = lakeRecords[lakeIdOf[i]];
@@ -604,6 +653,7 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
       c.waterLevelM = lake.waterLevelM;
       c.vegetation = null;
       c.river = false;
+      c.wadi = false;
     }
   }
   let conditionedCells = 0;
@@ -621,13 +671,15 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
 
   return {
     rivers,
+    wadis,
     lakes: lakeRecords,
     stats: {
       depressions: depressions.length,
       significantDepressions: depressions.filter((d) => d.significant).length,
       terminalBasins: closedDepressions.size,
       conditionedCells,
-      riverCells: riverCells.reduce((s, v) => s + v, 0)
+      riverCells: riverCells.reduce((s, v) => s + v, 0),
+      wadiCells: wadiCells.reduce((s, v) => s + v, 0)
     }
   };
 }

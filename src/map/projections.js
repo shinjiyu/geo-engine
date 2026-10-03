@@ -24,6 +24,13 @@ function pixelToLatLonEquirect(px, py, width, height) {
   return { lat, lon };
 }
 
+function latLonToEquirectPixel(lat, lon, width, height) {
+  return {
+    px: ((lon + 180) / 360) * width - 0.5,
+    py: ((90 - lat) / 180) * height - 0.5
+  };
+}
+
 /** Web Mercator: x linear in lon, y linear in mercator Y */
 function pixelToLatLonMercator(px, py, width, height) {
   const lon = -180 + ((px + 0.5) / width) * 360;
@@ -50,5 +57,6 @@ module.exports = {
   mercatorBounds,
   pixelToLatLonEquirect,
   pixelToLatLonMercator,
+  latLonToEquirectPixel,
   latLonToMercatorPixel
 };
