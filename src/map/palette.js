@@ -73,6 +73,35 @@ function magicColor(flux, isLand) {
   ];
 }
 
+const DESERT_COLOR = [214, 190, 138];
+const TUNDRA_COLOR = [150, 158, 138];
+
+function mix(a, b, t) {
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * t),
+    Math.round(a[1] + (b[1] - a[1]) * t),
+    Math.round(a[2] + (b[2] - a[2]) * t),
+    a[3] ?? 255
+  ];
+}
+
+/** 0..1 by warmest month: polar barrens read as tundra even where Köppen files them as cold desert. */
+function tundraShare(cell) {
+  const months = cell?.tempMonthlyC;
+  if (!months?.length) return cell?.koppen === 'ET' ? 1 : 0;
+  const warmest = Math.max(...months);
+  return Math.max(0, Math.min(1, (15 - warmest) / 7));
+}
+
+/** Relief colours carry no moisture, so tint them by aridity (0..1) and tundra share (0..1). */
+function climateTint(base, aridScore, tundra) {
+  const cold = Math.max(0, Math.min(1, tundra));
+  let rgba = base;
+  if (aridScore > 0) rgba = mix(rgba, DESERT_COLOR, Math.min(1, aridScore) * 0.85 * (1 - cold));
+  if (cold > 0) rgba = mix(rgba, TUNDRA_COLOR, cold * 0.6);
+  return rgba;
+}
+
 function riverOverlay(base, isRiver) {
   if (!isRiver) return base;
   return [
@@ -88,5 +117,7 @@ module.exports = {
   realmColor,
   elevationColor,
   magicColor,
+  climateTint,
+  tundraShare,
   riverOverlay
 };

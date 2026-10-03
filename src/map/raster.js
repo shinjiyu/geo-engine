@@ -20,10 +20,13 @@ const {
   realmColor,
   elevationColor,
   magicColor,
+  climateTint,
+  tundraShare,
   riverOverlay
 } = require('./palette');
 
 const VALID_LAYERS = ['terrain', 'realms', 'elevation', 'magic'];
+const TINTED_TERRAIN = { plain: 1, hill: 1, mountain: 0.55 };
 
 function planetOptions(world) {
   return {
@@ -73,6 +76,10 @@ function colorForCell(cell, layer, world, realmMap, paintRivers = true) {
       break;
     default:
       rgba = TERRAIN_COLORS[cell.terrain] || TERRAIN_COLORS.plain;
+      if (TINTED_TERRAIN[cell.terrain] && cell.isLand && !cell.isLake) {
+        const weight = TINTED_TERRAIN[cell.terrain];
+        rgba = climateTint(rgba, (cell.aridScore || 0) * weight, tundraShare(cell) * weight);
+      }
   }
 
   return riverOverlay(rgba, paintRivers && cell.river && cell.isLand && !cell.isLake);
@@ -506,17 +513,23 @@ function interpolatedCellFields(world, vec) {
   let elevation = 0;
   let magicFlux = 0;
   let runoff = 0;
+  let aridScore = 0;
+  let tundra = 0;
   for (const [u, v, weight] of corners) {
     const corner = faceUVToVector(face, u, v, n);
     const cell = lookupCell(world.cells, n, corner.x, corner.y, corner.z);
     elevation += (cell?.elevation || 0) * weight;
     magicFlux += (cell?.magicFlux || 0) * weight;
     runoff += Math.max(0, cell?.runoff || 0) * weight;
+    aridScore += (cell?.aridScore || 0) * weight;
+    tundra += tundraShare(cell) * weight;
   }
   return {
     elevation,
     magicFlux,
     runoff,
+    aridScore,
+    tundra,
     nearest: lookupCell(world.cells, n, vec.x, vec.y, vec.z)
   };
 }
@@ -560,6 +573,8 @@ function buildRegionRaster(world, options) {
   const lake = new Uint8Array(width * height);
   const riverLand = new Uint8Array(width * height);
   const runoffMm = new Float32Array(width * height);
+  const aridScore = new Float32Array(width * height);
+  const tundra = new Float32Array(width * height);
 
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
@@ -583,6 +598,8 @@ function buildRegionRaster(world, options) {
       elevation[index] = fields.elevation + detail * amplitude;
       magic[index] = fields.magicFlux;
       runoffMm[index] = fields.runoff;
+      aridScore[index] = fields.aridScore;
+      tundra[index] = fields.tundra;
       lake[index] = fields.nearest?.isLake ? 1 : 0;
       riverLand[index] = !fields.nearest?.isLake && elevation[index] > seaLevelM ? 1 : 0;
     }
@@ -600,6 +617,11 @@ function buildRegionRaster(world, options) {
       let rgba = lake[index]
         ? [66, 132, 176, 255]
         : cartographicColor(here, seaLevelM);
+      const reliefM = here - seaLevelM;
+      if (!lake[index] && reliefM > 0 && reliefM < 4200) {
+        const weight = reliefM < 1600 ? 1 : 0.55;
+        rgba = climateTint(rgba, aridScore[index] * weight, tundra[index] * weight);
+      }
       const shade = Math.max(0.62, Math.min(1.22, 0.92 + (left - right + down - up) / 900));
       rgba = [
         Math.round(rgba[0] * shade),
