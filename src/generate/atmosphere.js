@@ -875,6 +875,8 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   const rhcCol = new Float64Array(size);
   const frontal = new Float64Array(size);
   const oceanEvapRate = new Float64Array(size);
+  const blMix = new Float64Array(size);
+  const lljKeep = new Float64Array(size);
   const soilCap = p.soilCapacityMm;
   const betaCap = 0.75 * soilCap;
   const condense = Math.min(1, dtDay / p.condenseTauDays);
@@ -899,6 +901,13 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           const continental = isLand[c] ? p.frontalContinentality * (1 - marine[c]) : 0;
           frontal[c] = p.frontalRate * storm[c] * Math.min(2, baro[rowOf[c]] / 6) * (1 - continental) * leeFrontal[c] * dtDay;
           oceanEvapRate[c] = p.oceanEvapCoef * (speed[c] + 2) * dtDay;
+          // Slow mixing over onshore ocean; land convection vents the layer immediately.
+          const tau = Math.max(0.05, (p.blMixDays
+            + p.blProtectDays * p.lljBypass * lljProtect[c] * (isLand[c] ? 0 : 1))
+            / (1 + p.blVentAscent * Math.max(0, asc))
+            * (1 - 0.9 * heatLowCap[c]));
+          blMix[c] = 1 - Math.exp(-dtDay / tau);
+          lljKeep[c] = 1 - p.lljBypass * lljProtect[c];
         }
       }
       for (let c = 0; c < size; c++) {
@@ -981,12 +990,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
             wb = cap;
           }
 
-          // Slow mixing over onshore ocean; land convection vents the layer immediately.
-          const tau = Math.max(0.05, (p.blMixDays
-            + p.blProtectDays * p.lljBypass * lljProtect[c] * (isLand[c] ? 0 : 1))
-            / (1 + p.blVentAscent * Math.max(0, ascent[c]))
-            * (1 - 0.9 * heatLowCap[c]));
-          const mix = (1 - Math.exp(-dtDay / tau)) * wb;
+          const mix = blMix[c] * wb;
           w += mix;
           wb -= mix;
 
@@ -994,7 +998,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           const total = w + wb;
           const rh = Math.min(1.2, total / (fc > 0.5 ? fc : 0.5));
           const thresh = rhcCol[c] * cap;
-          const condensed = w > thresh ? (w - thresh) * condense * (1 - p.lljBypass * lljProtect[c]) : 0;
+          const condensed = w > thresh ? (w - thresh) * condense * lljKeep[c] : 0;
           let precip = condensed + total * frontal[c] * rh ** p.frontalRhExp;
           if (precip > total) precip = total;
           w -= Math.min(w, condensed);
