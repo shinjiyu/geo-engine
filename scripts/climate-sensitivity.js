@@ -25,7 +25,7 @@ const DEFAULT_KEYS = [
   'rainBeltLag', 'rainBeltEdgeDeg', 'rainBeltRhRaise', 'rainBeltLandMin', 'rainBeltLandFull',
   'rainBeltMinShiftDeg', 'rainBeltMonsoonDesertGain', 'rainBeltPlateauCancel', 'rainBeltEastWindowDeg',
   'monsoonLandGain', 'itczShiftFactor', 'plateauItczGain', 'rhBase', 'rhAscent', 'convergenceFactor',
-  'lljBypass', 'lljMinLat'
+  'lljBypass', 'lljMinLat', 'blProtectDays'
 ];
 const keys = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_KEYS;
 const n = Number(process.env.SENS_N || 48);

@@ -107,6 +107,11 @@ const DEFAULT_PARAMS = {
   // monsoon land whose trough sits well off the equator (India, south China, the Gulf coast).
   lljMinLat: 12,
   lljMinShiftDeg: 10,
+  // Boundary-layer vapour (Wb) mixes into the free troposphere on this timescale; monsoon
+  // undercurrent cells add blProtectDays so the jet can travel before it rains.
+  blMixDays: 0.08,
+  blProtectDays: 2,
+  blVentAscent: 0.5,
   frontalRate: 4,
   frontalRhTrue: 1,
   frontalRhExp: 2,
@@ -841,7 +846,9 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   }
 
   const W = new Float64Array(size);
+  const Wb = new Float64Array(size);
   const Wn = new Float64Array(size);
+  const Wbn = new Float64Array(size);
   const soil = new Float64Array(size);
   const snow = new Float64Array(size);
   const stepRain = new Float64Array(size);
@@ -918,33 +925,44 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         let after = 0;
         let removed = 0;
         stepRain.fill(0);
-        for (let c = 0; c < size; c++) before += W[c] * colFrac[c] * area[c];
+        for (let c = 0; c < size; c++) before += (W[c] + Wb[c]) * colFrac[c] * area[c];
         for (let c = 0; c < size; c++) {
           const o = c * 4;
           let w = depW[o] * W[depIdx[o]] + depW[o + 1] * W[depIdx[o + 1]]
             + depW[o + 2] * W[depIdx[o + 2]] + depW[o + 3] * W[depIdx[o + 3]];
+          let wb = depW[o] * Wb[depIdx[o]] + depW[o + 1] * Wb[depIdx[o + 1]]
+            + depW[o + 2] * Wb[depIdx[o + 2]] + depW[o + 3] * Wb[depIdx[o + 3]];
           const f = oroFrac[c];
           if (f > 0) {
-            // The lifted air comes from the upwind, lower slope and carries that column's vapour.
-            const rain = Math.min(w * colFrac[c], w * f * oroCol[c]);
-            w -= rain / colFrac[c];
+            // Low-level air is lifted first: orographic rain comes out of the boundary layer.
+            const wt = w + wb;
+            const rain = Math.min(wt * colFrac[c], wt * f * oroCol[c]);
+            let take = rain / colFrac[c];
+            const fromBl = Math.min(wb, take);
+            wb -= fromBl;
+            take -= fromBl;
+            w -= take;
             stepRain[c] += rain;
             removed += rain * area[c];
           }
-          w *= convergence[c] * leeFactor[c];
+          const stretch = convergence[c] * leeFactor[c];
+          w *= stretch;
+          wb *= stretch;
           Wn[c] = w;
-          after += w * colFrac[c] * area[c];
+          Wbn[c] = wb;
+          after += (w + wb) * colFrac[c] * area[c];
         }
         const fix = after > 0 ? (before - removed) / after : 1;
 
         for (let c = 0; c < size; c++) {
           let w = Wn[c] * fix;
+          let wb = Wbn[c] * fix;
           const cap = capDay[c];
           const ts = tsDay[c];
           let evap;
           let pet;
           if (!isLand[c]) {
-            evap = oceanEvapRate[c] * (iceDay[c] ? 0.15 : 1) * Math.max(0, cap - w);
+            evap = oceanEvapRate[c] * (iceDay[c] ? 0.15 : 1) * Math.max(0, cap - w - wb);
             pet = evap;
           } else {
             pet = snow[c] > 10 ? petSnowDay[c] : petDay[c];
@@ -957,15 +975,36 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
               evap += sub;
             }
           }
-          w += evap / colFrac[c];
+          wb += evap / colFrac[c];
+          if (wb > cap) {
+            w += wb - cap;
+            wb = cap;
+          }
+
+          // Slow mixing over onshore ocean; land convection vents the layer immediately.
+          const tau = Math.max(0.05, (p.blMixDays
+            + p.blProtectDays * p.lljBypass * lljProtect[c] * (isLand[c] ? 0 : 1))
+            / (1 + p.blVentAscent * Math.max(0, ascent[c]))
+            * (1 - 0.9 * heatLowCap[c]));
+          const mix = (1 - Math.exp(-dtDay / tau)) * wb;
+          w += mix;
+          wb -= mix;
 
           const fc = frontCapDay[c];
-          const rh = Math.min(1.2, w / (fc > 0.5 ? fc : 0.5));
+          const total = w + wb;
+          const rh = Math.min(1.2, total / (fc > 0.5 ? fc : 0.5));
           const thresh = rhcCol[c] * cap;
           const condensed = w > thresh ? (w - thresh) * condense * (1 - p.lljBypass * lljProtect[c]) : 0;
-          let precip = condensed + w * frontal[c] * rh ** p.frontalRhExp;
-          if (precip > w) precip = w;
-          W[c] = w - precip;
+          let precip = condensed + total * frontal[c] * rh ** p.frontalRhExp;
+          if (precip > total) precip = total;
+          w -= Math.min(w, condensed);
+          let rest = precip - Math.min(condensed, precip);
+          const fromFt = Math.min(w, rest);
+          w -= fromFt;
+          rest -= fromFt;
+          wb -= rest;
+          W[c] = w > 0 ? w : 0;
+          Wb[c] = wb > 0 ? wb : 0;
           if (record && diag) {
             const k = m * size + c;
             const cond = Math.min(condensed, precip);
@@ -1015,12 +1054,12 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
         for (let c = 0; c < size; c++) {
           const k = m * size + c;
           const f = 1 / daysInMonth[m];
-          diag.vapour[k] += W[c] * colFrac[c] * f;
+          diag.vapour[k] += (W[c] + Wb[c]) * colFrac[c] * f;
           diag.ascent[k] += ascent[c] * f;
           diag.u[k] += u[c] * f;
           diag.v[k] += v[c] * f;
           diag.marine[k] += marine[c] * f;
-          diag.columnRh[k] += (capDay[c] > 0.5 ? W[c] / capDay[c] : 0) * f;
+          diag.columnRh[k] += (capDay[c] > 0.5 ? (W[c] + Wb[c]) / capDay[c] : 0) * f;
         }
       }
       if (record) {
