@@ -202,6 +202,8 @@ const SPACES = {
       rainBeltEdgeDeg: [2, 12],
       rainBeltMonsoonDesertGain: [0, 10],
       rainBeltRhRaise: [0, 0.4],
+      lljBypass: [0, 0.9],
+      lljFetchDeg: [4, 16],
       wtgLandOffsetC: [0, 10],
       ascentBlurDeg: [1.5, 8],
       frontalRate: [0.05, 4],

@@ -20,11 +20,12 @@ const { normalizePlanet } = require('../src/planet/params');
 const { buildEarthCells, score } = require('../test/support/earth-climate-score');
 const { loadEarthClimatology } = require('../test/support/earth-reference');
 
-const SHARES = new Set(['rainBeltLandMin', 'rainBeltLandFull', 'rhBase', 'rhAscent']);
+const SHARES = new Set(['rainBeltLandMin', 'rainBeltLandFull', 'rhBase', 'rhAscent', 'lljBypass']);
 const DEFAULT_KEYS = [
   'rainBeltLag', 'rainBeltEdgeDeg', 'rainBeltRhRaise', 'rainBeltLandMin', 'rainBeltLandFull',
   'rainBeltMinShiftDeg', 'rainBeltMonsoonDesertGain', 'rainBeltPlateauCancel', 'rainBeltEastWindowDeg',
-  'monsoonLandGain', 'itczShiftFactor', 'plateauItczGain', 'rhBase', 'rhAscent', 'convergenceFactor'
+  'monsoonLandGain', 'itczShiftFactor', 'plateauItczGain', 'rhBase', 'rhAscent', 'convergenceFactor',
+  'lljBypass', 'lljMinLat'
 ];
 const keys = process.argv.slice(2).length ? process.argv.slice(2) : DEFAULT_KEYS;
 const n = Number(process.env.SENS_N || 48);

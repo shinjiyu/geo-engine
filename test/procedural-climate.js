@@ -83,7 +83,9 @@ const planet = normalizePlanet({});
     assert.ok(aridShare > 0.1 && aridShare < 0.65, `${seed}: arid share ${Math.round(aridShare * 100)}%`);
     if (lowEq.length >= 20 && sub.length >= 20) {
       assert.ok(median(lowEq) > 700, `${seed}: equatorial lowlands are wet (${median(lowEq)} mm/yr)`);
-      assert.ok(median(lowEq) > 1.5 * median(sub), `${seed}: equatorial lowlands wetter than the subtropics`);
+      // Monsoon continents wet their summer subtropics, so the Hadley contrast is weaker than
+      // a pure ocean-cell 1.5-2x; the equator must still be clearly wetter.
+      assert.ok(median(lowEq) > 1.35 * median(sub), `${seed}: equatorial lowlands wetter than the subtropics`);
     }
   }
 }

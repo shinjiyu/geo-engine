@@ -98,6 +98,15 @@ const DEFAULT_PARAMS = {
   rhMin: 0.45,
   rhMax: 0.98,
   condenseTauDays: 0.25,
+  // Share of column vapour in the monsoon / LLJ undercurrent that large-scale ascent does not
+  // condense: it is advected onshore (ocean cells whose wind hits land) and, over land, scales
+  // with marine origin. The dry heat low keeps none of this layer.
+  lljBypass: 0.85,
+  lljFetchDeg: 10,
+  // Below this |latitude| the ITCZ already rains on the coast; the undercurrent is for
+  // monsoon land whose trough sits well off the equator (India, south China, the Gulf coast).
+  lljMinLat: 12,
+  lljMinShiftDeg: 10,
   frontalRate: 4,
   frontalRhTrue: 1,
   frontalRhExp: 2,
@@ -363,6 +372,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
   const speed = new Float64Array(size);
   const ascent = new Float64Array(size);
   const heatLowCap = new Float64Array(size);
+  const lljProtect = new Float64Array(size);
   const baro = new Float64Array(nLat);
   const depIdx = new Int32Array(size * 4);
   const depW = new Float64Array(size * 4);
@@ -670,6 +680,39 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
       }
     }
 
+    // Boundary-layer moisture that large-scale ascent must not rain out: ocean columns whose
+    // wind strikes land within lljFetchDeg, and marine air already over land. Heat lows stay dry.
+    lljProtect.fill(0);
+    if (p.lljBypass > 0) {
+      const steps = Math.max(1, Math.round(p.lljFetchDeg / grid.res));
+      for (let i = 0; i < nLat; i++) {
+        for (let j = 0; j < nLon; j++) {
+          const c = i * nLon + j;
+          const open = (1 - heatLowCap[c])
+            * smoothstep(p.lljMinLat, p.lljMinLat + 6, Math.abs(rowLat[i]))
+            * smoothstep(p.lljMinShiftDeg, p.lljMinShiftDeg + 8, Math.abs(itcz[j] - phiOcean));
+          if (open <= 0) continue;
+          if (isLand[c]) {
+            lljProtect[c] = marine[c] * open;
+            continue;
+          }
+          const sp = speed[c] > 0.1 ? speed[c] : 0.1;
+          let lat = rowLat[i];
+          let lon = colLon[j];
+          const dLat = grid.res * v[c] / sp;
+          const dLon0 = grid.res * u[c] / sp;
+          for (let k = 1; k <= steps; k++) {
+            lat = clamp(lat + dLat, -89.9, 89.9);
+            lon += dLon0 / Math.max(0.05, Math.cos(lat * DEG));
+            if (isLand[grid.index(lat, lon)]) {
+              lljProtect[c] = open * Math.exp(-k * grid.res / p.lljFetchDeg);
+              break;
+            }
+          }
+        }
+      }
+    }
+
     // Column vapour obeys continuity: low-level convergence concentrates it.
     const totalDiv = new Float64Array(size);
     for (let i = 0; i < nLat; i++) {
@@ -919,7 +962,7 @@ function simulateAtmosphere(grid, surface, planet, options = {}) {
           const fc = frontCapDay[c];
           const rh = Math.min(1.2, w / (fc > 0.5 ? fc : 0.5));
           const thresh = rhcCol[c] * cap;
-          const condensed = w > thresh ? (w - thresh) * condense : 0;
+          const condensed = w > thresh ? (w - thresh) * condense * (1 - p.lljBypass * lljProtect[c]) : 0;
           let precip = condensed + w * frontal[c] * rh ** p.frontalRhExp;
           if (precip > w) precip = w;
           W[c] = w - precip;
