@@ -43,6 +43,7 @@ function scourGlacialBasins(cells, neighborTable, planet, seed, options = {}) {
     // Only basins deep enough to hold a lake may sink below sea level; shallow ones would dry out there.
     const floorM = depthM >= opts.subseaMinDepthM ? -Infinity : planet.seaLevelM + 5;
     cell.elevation = Math.max(floorM, cell.elevation - depthM);
+    cell.drainageElevation = Math.max(floorM, (cell.drainageElevation ?? cell.elevation + depthM) - depthM);
     scoured++;
   }
   return { scoured };

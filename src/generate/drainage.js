@@ -355,7 +355,7 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
   const d8 = buildD8Neighbors(neighborTable);
   const adj = keys.map((k) => (d8.get(k) || []).map((nk) => index.get(nk)).filter((j) => j !== undefined));
   const cellList = keys.map((k) => cells.get(k));
-  const elevation = Float64Array.from(cellList, (c) => c.elevation);
+  const elevation = Float64Array.from(cellList, (c) => c.drainageElevation ?? c.elevation);
   const isOcean = Uint8Array.from(cellList, (c) => (!c.isLand && !c.isLake ? 1 : 0));
   const meanCellAreaKm2 = 4 * Math.PI * planet.radiusKm * planet.radiusKm / count;
   const areaKm2 = Float64Array.from(cellList, (c) => meanCellAreaKm2 * (c.areaWeight || 1));
@@ -726,7 +726,11 @@ function runDrainage(cells, neighborTable, planet, options = {}) {
   for (const dep of depressions) {
     if (!dep.significant) {
       for (const c of dep.cells) {
-        cellList[c].elevation = flood.filled[c];
+        const filled = flood.filled[c];
+        if (cellList[c].drainageElevation == null || cellList[c].drainageElevation === cellList[c].elevation) {
+          cellList[c].elevation = filled;
+        }
+        cellList[c].drainageElevation = filled;
         conditionedCells++;
       }
       continue;

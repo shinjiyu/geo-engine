@@ -6,9 +6,10 @@
  */
 
 const assert = require('node:assert/strict');
-const { buildNeighborTable } = require('../src/topology/cube-sphere');
+const { buildNeighborTable, cellKey } = require('../src/topology/cube-sphere');
 const { runClimateStage } = require('../src/generate/climate-stage');
 const { runHydrology } = require('../src/generate/hydrology');
+const { scourGlacialBasins } = require('../src/generate/glacial-scour');
 const { normalizePlanet } = require('../src/planet/params');
 const { loadEarthClimatology } = require('./support/earth-reference');
 const { buildEarthCells, cellAt, score } = require('./support/earth-climate-score');
@@ -56,7 +57,8 @@ for (const [group, obs] of Object.entries(KOPPEN_OBS)) {
   assert.ok(Math.abs(pct - obs) <= 8, `Koppen ${group} covers ${pct}% of land (obs ~${obs}%)`);
 }
 
-const { rivers } = runHydrology(cells, n, { planet, neighborTable });
+scourGlacialBasins(cells, neighborTable, planet, 'earth');
+const { rivers, lakes } = runHydrology(cells, n, { planet, neighborTable });
 const mains = rivers.filter((r) => r.kind === 'main').sort((a, b) => b.dischargeKm3 - a.dischargeKm3);
 const mouthOf = (r) => cells.get(r.cells[r.cells.length - 1]);
 const amazon = mouthOf(mains[0]);
@@ -65,4 +67,18 @@ const arctic = mains.filter((r) => mouthOf(r).lat > 60 && r.dischargeKm3 > 100);
 assert.ok(arctic.length >= 2, 'large rivers drain into the Arctic');
 for (const r of arctic) assert.ok(r.floodMonth >= 5 && r.floodMonth <= 7, `Arctic river floods with snowmelt (month ${r.floodMonth})`);
 
+const nileCell = cellAt(cells, n, 23, 31);
+const nileKey = cellKey(nileCell.face, nileCell.u, nileCell.v);
+let nile = rivers.find((r) => r.cells.includes(nileKey));
+assert.ok(nile, 'a river follows the Nile through Egypt');
+while (nile.parentId) nile = rivers.find((r) => r.id === nile.parentId);
+const nileMouth = mouthOf(nile);
+assert.ok(nileMouth.lat > 28 && nileMouth.lon > 25 && nileMouth.lon < 34,
+  `the Nile reaches the Mediterranean (${nileMouth.lat}, ${nileMouth.lon})`);
+assert.ok(lakes.some((l) => {
+  const c = cells.get(l.cells[0]);
+  return !l.freshwater && Math.abs(c.lat - 42) < 6 && Math.abs(c.lon - 50) < 8;
+}), 'the Caspian remains a closed lake');
+
+console.log(`  hydrology rivers=${rivers.length} lakes=${lakes.length} nileMouth=${nileMouth.lat.toFixed(1)},${nileMouth.lon.toFixed(1)}`);
 console.log('earth climate test passed');

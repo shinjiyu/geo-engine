@@ -145,6 +145,7 @@ function openNarrowStraits(cells, neighborTable, footprintMinElevation, passable
       for (let u = parent.get(hit); u >= 0 && !water[u]; u = parent.get(u)) {
         const cell = cells.get(keys[u]);
         cell.elevation = Math.min(cell.elevation, footprintMinElevation.get(keys[u]), passableBelowM);
+        cell.drainageElevation = Math.min(cell.drainageElevation ?? cell.elevation, cell.elevation);
         cell.isLand = false;
         water[u] = true;
         inMain[u] = 1;

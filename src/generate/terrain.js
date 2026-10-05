@@ -118,29 +118,34 @@ function generateTerrain(seed, n, options = {}) {
       for (let v = 0; v < n; v++) {
         const vector = faceUVToVector(face, u, v, n);
         const { lat, lon } = vectorToLatLon(vector.x, vector.y, vector.z);
+        const key = cellKey(face, u, v);
         let elevation;
         if (orogen) elevation = seaLevelM + orogen.elevationM[regionIndex];
         else if (backend === 'heightmap') elevation = seaLevelM + options.sampleHeightM(lat, lon);
         else elevation = sampleElev(vector.x, vector.y, vector.z);
+        let drainageElevation = elevation;
         if (footprintMin) {
-          let lowest = elevation;
+          // Climate uses the cell-centre height; drainage follows the lowest pass in the
+          // footprint so a canyon narrower than a cell (Nile, Indus) is not blocked by the
+          // plateau sampled at the centre.
           for (const du of footprintOffsets) {
             for (const dv of footprintOffsets) {
               const s = faceUVToVector(face, u + du, v + dv, n);
               const ll = vectorToLatLon(s.x, s.y, s.z);
-              lowest = Math.min(lowest, seaLevelM + options.sampleHeightM(ll.lat, ll.lon));
+              drainageElevation = Math.min(drainageElevation, seaLevelM + options.sampleHeightM(ll.lat, ll.lon));
             }
           }
-          footprintMin.set(cellKey(face, u, v), lowest);
+          footprintMin.set(key, drainageElevation);
         }
 
-        cells.set(cellKey(face, u, v), {
+        cells.set(key, {
           face,
           u,
           v,
           lat: Math.round(lat * 100) / 100,
           lon: Math.round(lon * 100) / 100,
           elevation,
+          drainageElevation,
           isLand: elevation > seaLevelM,
           isLake: false,
           terrain: null,

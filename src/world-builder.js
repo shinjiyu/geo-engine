@@ -31,7 +31,7 @@ const { deriveWorldProfile } = require('./facts/derive-world-profile');
 const WORLDS_DIR = path.join(__dirname, '../worlds');
 const GEO_SCHEMA_VERSION = 1;
 const GEO_ENGINE_VERSION = '0.15.0';
-const GEO_PIPELINE_ID = 'orogen-llj-bl-climate-scour-drainage-v9';
+const GEO_PIPELINE_ID = 'orogen-llj-bl-climate-scour-drainage-v10';
 
 function configFingerprint(config) {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex')}`;
